@@ -1,0 +1,32 @@
+# Render Blueprint — bepul (free) web service.
+# Ishlatish: Render Dashboard -> New + -> Blueprint -> shu repozitoriyani tanlang.
+# Batafsil: README.md
+services:
+  - type: web
+    name: growth-exchange-bot
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # BotFather'dan olingan token
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      # Admin Telegram ID'lar, vergul bilan: 123456789,987654321
+      - key: ADMIN_IDS
+        sync: false
+      # Veb panel paroli — Render avtomatik generatsiya qiladi,
+      # Dashboard -> Environment bo'limidan ko'rish mumkin.
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      # Free instance 15 daqiqa trafiksiz uxlab qoladi; bot ham to'xtaydi.
+      # 1 = o'zini har 10 daqiqada /healthz bilan uyg'otib turadi.
+      - key: KEEP_ALIVE
+        value: "1"
+      - key: KEEP_ALIVE_SEC
+        value: "600"

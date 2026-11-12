@@ -1,0 +1,17 @@
+{
+  "name": "growth-exchange-bot",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram growth-exchange bot (long polling) + veb admin panel — Render free tier uchun moslangan",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}

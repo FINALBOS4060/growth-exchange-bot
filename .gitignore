@@ -1,0 +1,19 @@
+# Bog'liqliklar
+node_modules/
+
+# Maxfiy sozlamalar
+.env
+.env.local
+.env.*.local
+
+# Lokal ma'lumotlar bazasi (fayl rejimi)
+data/
+*.db.json
+
+# Loglar
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
