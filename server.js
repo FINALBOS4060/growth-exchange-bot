@@ -78,7 +78,7 @@ function calculateRefundAmount(order) {
     refundCredits
   };
 }
-function qualifyReferral(referral, hasCompletedVerifiedTask, bonusAmount = 200) {
+function qualifyReferral(referral, hasCompletedVerifiedTask, bonusAmount = 300) {
   if (referral.bonusIssued) {
     return { isEligible: false, rewardCredits: 0 };
   }
@@ -131,7 +131,9 @@ var HOST = process.env.IP || "0.0.0.0";
 var defaultSettings = () => ({
   creditRewardTelegram: 100,
   creditRewardInstagram: 100,
-  creditRewardReferral: 200,
+  creditRewardReferral: 300,
+  // 1 obunachi narxi (buyurtmada). 1 kredit = 1 obunachi.
+  creditPerSubscriber: 1,
   // Yangi foydalanuvchi o'z kanalini ulaganda bir martalik sovg'a
   creditRewardChannelLink: 10,
   // Ro'yxatdan o'tish bonusi o'chirilgan (0) — sovg'a kanal ulanganda beriladi
@@ -342,6 +344,11 @@ function save() {
   }, 500);
 }
 var S = () => db.settings;
+// 1 obunachi necha kredit turadi (1:1 qoidasi).
+function perSub() {
+  const n = Number(S().creditPerSubscriber);
+  return Math.max(1, Number.isFinite(n) && n > 0 ? n : 1);
+}
 var nowStr = () => (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 16);
 var esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 var nid = (p) => `${p}-${Date.now().toString(36)}${(++db.seq).toString(36)}`;
@@ -432,7 +439,7 @@ var STR = {
     disc_no: "Yo‘q",
     start_new: "Assalomu alaykum, {name}! 👋\n\nBotga xush kelibsiz! Quyida qisqa yo‘riqnoma.",
     start_back: "Assalomu alaykum, {name}! 🚀\n\nBu Telegram va Instagram o‘zaro o‘sish platformasi.\nBoshqa kanallarga obuna bo‘lib kredit ishlang va o‘z kanalingizga obunachi buyurtma qiling.\n\n{balance}",
-    guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {per} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{per} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
+    guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {price} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{reward} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
     bonus_line: "\nBirinchi kanal uchun +{bonus} kredit sovg‘a.",
     bal: "💰 Balans: <b>{a}</b> kredit  •  🔒 Band: {r} kredit",
     tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: hozir hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.\n\n{balance}",
@@ -470,7 +477,18 @@ var STR = {
     set_all_on: "🔔 Hammasini yoqish",
     set_all_off: "🔕 Hammasini o‘chirish",
     set_back: "⬅️ Orqaga",
-    set_rates: "📊 <b>Kredit qoidalari</b>\n\n• 1 tasdiqlangan obuna = <b>{tg}</b> kredit\n• 1 obunachi (buyurtma) = <b>{tg}</b> kredit\n• 1 faol referal = <b>{ref}</b> kredit\n• Birinchi kanal uchun sovg‘a = <b>{link}</b> kredit\n• Ro‘yxatdan o‘tish sovg‘asi = <b>{signup}</b> kredit\n\nKredit — pul emas, bot ichidagi hisob birligi. Qiymatlarni admin o‘zgartiradi.",
+    frozen: "🧊 Buyurtmalar vaqtincha muzlatilgan. Keyinroq urinib ko‘ring.",
+    ord_qty_range: "Son 10 dan 10 000 gacha bo‘lishi kerak. Qaytadan yozing:",
+    my_tickets_btn: "🗂 Murojaatlarim",
+    my_tickets_title: "🗂 <b>Murojaatlarim</b>\n\n{tickets}",
+    my_tickets_none: "Hali murojaat yubormaganmisiz.\nYuborish: Sozlamalar → “🛟 Adminga murojaat”.",
+    my_tickets_item: "• <b>{ticket}</b> · {status}\n  {category}\n  {date}{answer}",
+    my_tickets_answer: "\n  💬 Javob: {text}",
+    st_new: "🆕 yangi",
+    st_review: "🔍 ko‘rilmoqda",
+    st_answered: "✅ javob berilgan",
+    st_closed: "🔒 yopilgan",
+    set_rates: "📊 <b>Kredit qoidalari</b>\n\n• 1 tasdiqlangan obuna = <b>{tg}</b> kredit\n• 1 obunachi buyurtmasi = <b>{per}</b> kredit\n• 1 faol referal = <b>{ref}</b> kredit\n• Birinchi kanal uchun sovg‘a = <b>{link}</b> kredit\n• Ro‘yxatdan o‘tish sovg‘asi = <b>{signup}</b> kredit\n\nKredit — pul emas, bot ichidagi hisob birligi. Qiymatlarni admin o‘zgartiradi.",
     set_info: "👤 <b>Ma’lumotlarim</b>\n\nIsm: {name}\nID: <code>{id}</code>\nUsername: {username}\nTil: {lang}\nRo‘yxatdan: {date}\n\n💰 Balans: <b>{a}</b> · 🔒 Band: {r}\n💸 Sarf: {s} · ↩️ Qaytim: {ref}\n\n📢 Kanallar: {ch} · 📸 Instagram: {ig}\n✅ Vazifalar: {done} · 🛒 Faol buyurtma: {ord}\n👥 Referallar: {refs} · 🛟 Murojaatlar: {tickets}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Adminga murojaat</b>\n\nMuammo yoki taklifingizni bitta xabar bilan yozing — javob shu chatga keladi.\n\nBekor qilish: /cancel",
     help: "🛟 <b>Yordam — qisqa qo‘llanma</b>\n\n📢 <b>Kanallarim</b> — kanal ulash, kanal statistikasi, obunachi buyurtish.\n📋 <b>Vazifalar</b> — 10 talik kanallar; obuna bo‘lib “✅ Obuna bo‘ldim” bosing.\n🛒 <b>Buyurtmalarim</b> — buyurtmalar holati; bekor qilsangiz kreditingiz qaytadi.\n📸 <b>Instagram</b> — profil ulash (rasmiy tekshiruv yo‘q, tasdiqlash o‘zingizga asoslanadi).\n👥 <b>Referal</b> — taklif havolasi va bonusni kanalga yo‘naltirish.\n📊 <b>Statistika</b> — balans, sarf, bajarilgan vazifalar.\n⚙️ <b>Sozlamalar</b> — til, bildirishnomalar, kredit qoidalari, ma’lumotlarim, adminga murojaat.\n\n<b>Qoidalar:</b> obuna haqiqiy tekshiriladi; obunadan chiqsangiz kredit qaytarib olinadi; soxta harakatda hisob bloklanadi; kanal uchun bot administrator bo‘lishi shart.",
@@ -498,7 +516,7 @@ var STR = {
     disc_no: "Нет",
     start_new: "Здравствуйте, {name}! 👋\n\nДобро пожаловать! Ниже короткая инструкция.",
     start_back: "Здравствуйте, {name}! 🚀\n\nЭто платформа взаимного роста в Telegram и Instagram.\nПодписывайтесь на другие каналы, зарабатывайте кредиты и заказывайте подписчиков себе.\n\n{balance}",
-    guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {per} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
+    guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {price} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам. За каждую подписку +{reward} кредитов.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
     bonus_line: "\nЗа первый канал +{bonus} кредитов.",
     bal: "💰 Баланс: <b>{a}</b> кредитов  •  🔒 Резерв: {r}",
     tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: сейчас никто не заказывал подписчиков. Попробуйте позже.\n\n{balance}",
@@ -536,7 +554,18 @@ var STR = {
     set_all_on: "🔔 Включить всё",
     set_all_off: "🔕 Отключить всё",
     set_back: "⬅️ Назад",
-    set_rates: "📊 <b>Правила кредитов</b>\n\n• 1 подтверждённая подписка = <b>{tg}</b> кредитов\n• 1 подписчик (заказ) = <b>{tg}</b> кредитов\n• 1 активный реферал = <b>{ref}</b> кредитов\n• Бонус за первый канал = <b>{link}</b> кредитов\n• Бонус за регистрацию = <b>{signup}</b> кредитов\n\nКредит — не деньги, а внутренняя единица бота. Значения меняет администратор.",
+    frozen: "🧊 Заказы временно заморожены. Попробуйте позже.",
+    ord_qty_range: "Количество должно быть от 10 до 10 000. Введите снова:",
+    my_tickets_btn: "🗂 Мои обращения",
+    my_tickets_title: "🗂 <b>Мои обращения</b>\n\n{tickets}",
+    my_tickets_none: "Вы ещё не отправляли обращений.\nОтправить: Настройки → “🛟 Написать админу”.",
+    my_tickets_item: "• <b>{ticket}</b> · {status}\n  {category}\n  {date}{answer}",
+    my_tickets_answer: "\n  💬 Ответ: {text}",
+    st_new: "🆕 новое",
+    st_review: "🔍 на рассмотрении",
+    st_answered: "✅ отвечено",
+    st_closed: "🔒 закрыто",
+    set_rates: "📊 <b>Правила кредитов</b>\n\n• 1 подтверждённая подписка = <b>{tg}</b> кредитов\n• 1 подписчик в заказе = <b>{per}</b> кредитов\n• 1 активный реферал = <b>{ref}</b> кредитов\n• Бонус за первый канал = <b>{link}</b> кредитов\n• Бонус за регистрацию = <b>{signup}</b> кредитов\n\nКредит — не деньги, а внутренняя единица бота. Значения меняет администратор.",
     set_info: "👤 <b>Мои данные</b>\n\nИмя: {name}\nID: <code>{id}</code>\nUsername: {username}\nЯзык: {lang}\nРегистрация: {date}\n\n💰 Баланс: <b>{a}</b> · 🔒 Резерв: {r}\n💸 Израсходовано: {s} · ↩️ Возвращено: {ref}\n\n📢 Каналов: {ch} · 📸 Instagram: {ig}\n✅ Заданий: {done} · 🛒 Активных заказов: {ord}\n👥 Рефералов: {refs} · 🛟 Обращений: {tickets}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Написать администратору</b>\n\nОпишите проблему или предложение одним сообщением — ответ придёт в этот чат.\n\nОтмена: /cancel",
     help: "🛟 <b>Помощь — краткое руководство</b>\n\n📢 <b>Мои каналы</b> — добавить канал, статистика, заказ подписчиков.\n📋 <b>Задания</b> — 10 каналов; подпишитесь и нажмите “✅ Я подписался”.\n🛒 <b>Мои заказы</b> — статус заказов; при отмене кредиты возвращаются.\n📸 <b>Instagram</b> — добавление профиля (официальной проверки нет).\n👥 <b>Рефералы</b> — ссылка и направление бонуса на канал.\n📊 <b>Статистика</b> — баланс, расход, задания.\n⚙️ <b>Настройки</b> — язык, уведомления, правила кредитов, мои данные, связь с админом.\n\n<b>Правила:</b> подписка проверяется; при отписке кредиты списываются; за обман аккаунт блокируется; бот должен быть администратором канала.",
@@ -564,7 +593,7 @@ var STR = {
     disc_no: "No",
     start_new: "Hello, {name}! 👋\n\nWelcome! Here is a short guide.",
     start_back: "Hello, {name}! 🚀\n\nThis is a Telegram and Instagram growth exchange.\nSubscribe to other channels to earn credits, then order subscribers for your own.\n\n{balance}",
-    guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {per} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
+    guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {price} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies. Each subscription gives +{reward} credits.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
     bonus_line: "\n+{bonus} credits for your first channel.",
     bal: "💰 Balance: <b>{a}</b> credits  •  🔒 Reserved: {r}",
     tasks_none: "📋 <b>No tasks yet</b>\n\nReason: nobody has ordered subscribers yet. Try again later.\n\n{balance}",
@@ -602,7 +631,18 @@ var STR = {
     set_all_on: "🔔 Turn all on",
     set_all_off: "🔕 Turn all off",
     set_back: "⬅️ Back",
-    set_rates: "📊 <b>Credit rules</b>\n\n• 1 verified subscription = <b>{tg}</b> credits\n• 1 subscriber (order) = <b>{tg}</b> credits\n• 1 active referral = <b>{ref}</b> credits\n• First channel bonus = <b>{link}</b> credits\n• Signup bonus = <b>{signup}</b> credits\n\nA credit is not money — it is the bot's internal unit. Values are changed by the administrator.",
+    frozen: "🧊 Orders are temporarily frozen. Try again later.",
+    ord_qty_range: "Quantity must be between 10 and 10 000. Enter again:",
+    my_tickets_btn: "🗂 My requests",
+    my_tickets_title: "🗂 <b>My requests</b>\n\n{tickets}",
+    my_tickets_none: "You have not sent any request yet.\nSend one: Settings → “🛟 Message admin”.",
+    my_tickets_item: "• <b>{ticket}</b> · {status}\n  {category}\n  {date}{answer}",
+    my_tickets_answer: "\n  💬 Reply: {text}",
+    st_new: "🆕 new",
+    st_review: "🔍 in review",
+    st_answered: "✅ answered",
+    st_closed: "🔒 closed",
+    set_rates: "📊 <b>Credit rules</b>\n\n• 1 verified subscription = <b>{tg}</b> credits\n• 1 ordered subscriber = <b>{per}</b> credits\n• 1 active referral = <b>{ref}</b> credits\n• First channel bonus = <b>{link}</b> credits\n• Signup bonus = <b>{signup}</b> credits\n\nA credit is not money — it is the bot's internal unit. Values are changed by the administrator.",
     set_info: "👤 <b>My data</b>\n\nName: {name}\nID: <code>{id}</code>\nUsername: {username}\nLanguage: {lang}\nRegistered: {date}\n\n💰 Balance: <b>{a}</b> · 🔒 Reserved: {r}\n💸 Spent: {s} · ↩️ Refunded: {ref}\n\n📢 Channels: {ch} · 📸 Instagram: {ig}\n✅ Tasks: {done} · 🛒 Active orders: {ord}\n👥 Referrals: {refs} · 🛟 Requests: {tickets}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Message the administrator</b>\n\nDescribe the problem or suggestion in one message — the reply arrives in this chat.\n\nCancel: /cancel",
     help: "🛟 <b>Help — quick guide</b>\n\n📢 <b>My channels</b> — add a channel, stats, order subscribers.\n📋 <b>Tasks</b> — 10 channels; subscribe and press “✅ I subscribed”.\n🛒 <b>My orders</b> — order status; credits are refunded on cancel.\n📸 <b>Instagram</b> — add a profile (no official verification).\n👥 <b>Referrals</b> — your link and bonus allocation.\n📊 <b>Statistics</b> — balance, spending, tasks.\n⚙️ <b>Settings</b> — language, notifications, credit rules, my data, contact admin.\n\n<b>Rules:</b> subscriptions are verified; unsubscribing revokes credits; cheating blocks the account; the bot must be a channel administrator.",
@@ -1020,7 +1060,7 @@ function tryQualifyReferral(u) {
 }
 // Referal bonusini tanlangan kanalga obunachi navbati sifatida yo'naltiradi.
 function allocateRefBonus(referrer, ref, ch) {
-  const unit = Math.max(1, Number(S().creditRewardTelegram) || 100);
+  const unit = perSub();
   const amount = Number(ref.bonusAmount) || 0;
   const units = Math.max(1, Math.floor(amount / unit));
   let o = db.orders.find((x) => x.destinationId === ch.id && x.status === "active");
@@ -1204,7 +1244,7 @@ async function showReferrals(u, chat) {
   if (waiting.length && chs.length) rows.push([{ text: T(u, "ref_alloc"), callback_data: `refa:${waiting[0].id}|${chs[0].id}` }]);
   const text = T(u, "ref_title", {
     reward: S().creditRewardReferral,
-    unit: S().creditRewardTelegram,
+    unit: perSub(),
     n: refs.length,
     paid,
     pending: pendingAmount > 0 ? T(u, "ref_pending", { amount: pendingAmount, hint: chs.length ? "" : " — " + T(u, "ch_none").split("\n")[0] }) : "",
@@ -1254,12 +1294,27 @@ async function showSettings(u, chat) {
     [{ text: T(u, "b_orders") + " " + mark(notifOn(u, "orders")), callback_data: "nt:orders" }, { text: "\u{1F6E0} " + mark(notifOn(u, "technical")), callback_data: "nt:technical" }],
     [{ text: T(u, "set_all_on"), callback_data: "ntall:on" }, { text: T(u, "set_all_off"), callback_data: "ntall:off" }],
     [{ text: T(u, "set_rates_btn"), callback_data: "setrates" }, { text: T(u, "set_info_btn"), callback_data: "setinfo" }],
-    [{ text: T(u, "set_support_btn"), callback_data: "setsupport" }]
+    [{ text: T(u, "set_support_btn"), callback_data: "setsupport" }, { text: T(u, "my_tickets_btn"), callback_data: "setmyt" }]
   ]));
+}
+async function showMyTickets(u, chat) {
+  const list = db.complaints.filter((c) => c.userId === u.id).slice(-8).reverse();
+  const stKey = { NEW: "st_new", IN_REVIEW: "st_review", ANSWERED: "st_answered", CLOSED: "st_closed" };
+  const body = list.length
+    ? list.map((c) => T(u, "my_tickets_item", {
+        ticket: esc(c.ticketId || "—"),
+        status: T(u, stKey[c.status] || "st_new"),
+        category: esc(c.category || "—"),
+        date: esc(c.createdAt || ""),
+        answer: c.adminResponse ? T(u, "my_tickets_answer", { text: esc(String(c.adminResponse).slice(0, 300)) }) : ""
+      })).join("\n")
+    : T(u, "my_tickets_none");
+  return send(chat, T(u, "my_tickets_title", { tickets: body }), inline([[{ text: T(u, "set_back"), callback_data: "settings" }]]));
 }
 async function showCreditRules(u, chat) {
   return send(chat, T(u, "set_rates", {
     tg: S().creditRewardTelegram,
+    per: perSub(),
     ref: S().creditRewardReferral,
     link: S().creditRewardChannelLink,
     signup: S().creditRewardSignup
@@ -1317,10 +1372,10 @@ async function prepareOrder(u, destId, qty, chat) {
   const dest = destOf(destId);
   if (!dest) return send(chat, T(u, "choose_menu"), menuFor(u));
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
-  if (S().areOrdersFrozen) return send(chat, "❄️", menuFor(u));
+  if (S().areOrdersFrozen) return send(chat, T(u, "frozen"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
-  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, T(u, "ord_qty", { title: "10–10000", unit: 0, balance: "", max: "—" }));
-  const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
+  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, T(u, "ord_qty_range"));
+  const unit = perSub();
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
@@ -1345,7 +1400,7 @@ async function createOrderConfirmed(u, destId, qty, chat) {
   if (S().areOrdersFrozen) return send(chat, TR(u, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan."), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", menuFor(u));
   if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, TR(u, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:"));
-  const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
+  const unit = perSub();
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
@@ -1531,7 +1586,8 @@ async function enterControllerCode(u, code, chat) {
 function guideText(u) {
   const bonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
   return T(u, "guide", {
-    per: S().creditRewardTelegram,
+    price: perSub(),
+    reward: S().creditRewardTelegram,
     ref: S().creditRewardReferral,
     bonus: bonus > 0 ? T(u, "bonus_line", { bonus }) : ""
   });
@@ -1570,6 +1626,10 @@ async function handleMessage(msg) {
     }
     await sponsorGate(u, chat);
     return;
+  }
+  if (/^\/(tickets|murojaatlar|obrasheniya)/i.test(text)) {
+    u.state = null;
+    return showMyTickets(u, chat);
   }
   if (/^\/(help|yordam|qollanma)/i.test(text)) {
     u.state = null;
@@ -1647,7 +1707,7 @@ async function handleCallback(cq) {
       if (isTg && !channelsOf(u).some((c) => c.id === arg)) return;
       if (!isTg && d.userId !== u.id) return;
       u.state = { type: "order_qty", destId: arg };
-      const unit = isTg ? S().creditRewardTelegram : S().creditRewardInstagram;
+      const unit = perSub();
       return send(chat, T(u, "ord_qty", {
         title: esc(isTg ? d.title : "@" + d.username),
         unit,
@@ -1729,6 +1789,8 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       save();
       return showSettings(u, chat);
     }
+    case "setmyt":
+      return showMyTickets(u, chat);
     case "setrates":
       return showCreditRules(u, chat);
     case "setinfo":
@@ -1783,7 +1845,7 @@ Faol buyurtmalar: ${db.orders.filter((o) => o.status === "active").length}
 Ochiq vazifalar: ${db.tasks.filter((t) => OPEN.has(t.status)).length}
 Yangi shikoyatlar: ${db.complaints.filter((c) => c.status === "NEW").length}
 Holat: bot ${S().isBotPaused ? "\u23F8" : "\u25B6\uFE0F"} \u2022 buyurtma ${S().areOrdersFrozen ? "\u{1F9CA}" : "\u2705"} \u2022 IG ${S().isInstagramEnabled ? "yoqilgan" : "o\u2018chiq"}
-Mukofot: TG ${S().creditRewardTelegram} / IG ${S().creditRewardInstagram} / ref ${S().creditRewardReferral}
+Mukofot: TG ${S().creditRewardTelegram}, obunachi narxi ${perSub()}, ref ${S().creditRewardReferral}
 
 /pause /resume /freeze /unfreeze /igon /igoff
 /addcredits ID SON \u2022 /block ID \u2022 /unblock ID
@@ -3478,7 +3540,7 @@ var server = http.createServer((req, res) => {
             const { news, bots, ...rest } = s;
             return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
           }
-          for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral"]) {
+          for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral", "creditPerSubscriber"]) {
             if (b[k] === void 0) continue;
             const n = Number(b[k]);
             if (!Number.isFinite(n) || n < 0) throw new Error(k + " noto'g'ri son");
@@ -3660,6 +3722,15 @@ function botsInit() {
 // ulanganda beriladi (creditRewardChannelLink).
 function migrateSettings() {
   const s = S();
+  // 1 kredit = 1 obunachi; referal bonusi 300 kredit.
+  if (s.rulesVersion !== 3) {
+    if (typeof s.creditPerSubscriber !== "number" || !(s.creditPerSubscriber > 0)) s.creditPerSubscriber = 1;
+    s.creditRewardReferral = 300;
+    if (typeof s.creditRewardTelegram !== "number") s.creditRewardTelegram = 100;
+    s.rulesVersion = 3;
+    save();
+    console.log(`Qoida: 1 obunachi = ${s.creditPerSubscriber} kredit, obuna mukofoti ${s.creditRewardTelegram}, referal ${s.creditRewardReferral}`);
+  }
   if (s.bonusRuleVersion === 2) return;
   s.creditRewardSignup = 0;
   if (typeof s.creditRewardChannelLink !== "number") s.creditRewardChannelLink = 10;
