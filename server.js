@@ -513,7 +513,7 @@ function tryQualifyReferral(u) {
 }
 async function verifyBatch(u, platform, chat) {
   const batch = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
-  if (!batch.length) return send(chat, "Tekshiradigan vazifa yo\u2018q. \u{1F4CB} Vazifalar tugmasini bosing.", MENU);
+  if (!batch.length) return send(chat, "Tekshiradigan vazifangiz yo‘q.\n\nAvval “📋 Vazifalar” tugmasini bosing.", MENU);
   const lookup = {};
   if (platform === "telegram") {
     await Promise.all(batch.map(async (t) => {
@@ -544,123 +544,177 @@ async function verifyBatch(u, platform, chat) {
   if (firstTg) tryQualifyReferral(u);
   save();
   const notDone = out.deferredTasks.filter((t) => t.status === "PENDING");
-  let text = `\u2705 <b>Tekshiruv yakunlandi!</b>
+  let text = `✅ <b>Tekshirildi!</b>
 
-\u2022 Tasdiqlangan: ${out.verifiedTasks.length} ta
-\u2022 Mukofot: +${earned} kredit
-\u2022 Balans: ${u.credits.available} kredit`;
+• Tasdiqlandi: <b>${out.verifiedTasks.length} ta</b>
+• Mukofot: <b>+${earned} kredit</b>
+• Hozirgi balans: <b>${u.credits.available} kredit</b>`;
   if (notDone.length) text += `
 
-\u23F3 <b>Hali bajarilmagan (${notDone.length} ta)</b> \u2014 obuna bo\u2018lib, qayta tekshiring:
-` + notDone.map((t) => `\u2022 ${esc(t.destinationTitle)}`).join("\n");
+⏳ <b>Hali obuna bo‘lmaganlar (${notDone.length} ta):</b>
+` + notDone.map((t) => `• ${esc(t.destinationTitle)}`).join("\n") + `
+
+Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
   if (out.apiErrorTasks.length) text += `
 
-\u26A0\uFE0F ${out.apiErrorTasks.length} ta kanalni tekshirib bo\u2018lmadi (texnik xato). Bu obunani bekor qilish hisoblanmaydi \u2014 keyinroq qayta tekshiriladi.`;
+⚠️ ${out.apiErrorTasks.length} ta kanalni hozir tekshirib bo‘lmadi (Telegram’ning o‘zida xato). Sizda ayb yo‘q — keyinroq o‘zi qayta tekshiriladi.`;
   await send(chat, text, MENU);
   if (!notDone.length && !out.apiErrorTasks.length) await showTasks(u, platform, chat);
 }
 function balanceLine(u) {
-  return `\u{1F4B0} Balans: <b>${u.credits.available}</b> kredit  \u2022  \u{1F512} Band: ${u.credits.reserved}`;
+  return `💰 Balans: <b>${u.credits.available}</b> kredit  •  🔒 Band: ${u.credits.reserved} kredit`;
 }
 async function showTasks(u, platform, chat) {
-  if (platform === "telegram" && S().isTelegramPaused) return send(chat, "\u23F8 Telegram vazifalari vaqtincha to\u2018xtatilgan.", MENU);
-  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli hozircha o\u2018chirilgan.", MENU);
+  if (platform === "telegram" && S().isTelegramPaused) return send(chat, "⏸ Telegram vazifalari vaqtincha to‘xtatilgan. Keyinroq urinib ko‘ring.", MENU);
+  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", MENU);
   const batch = getBatch(u, platform);
-  if (!batch.length) return send(chat, `\u{1F4CB} Hozircha sizga mos vazifa yo\u2018q. Keyinroq urinib ko\u2018ring.
+  if (!batch.length) return send(chat, `📋 <b>Hozircha vazifa yo‘q</b>
+
+Buning sababi: hozir hech kim obunachi buyurtma qilmagan, ya’ni obuna bo‘ladigan kanal yo‘q. Keyinroq yana shu tugmani bosing.
 
 ${balanceLine(u)}`, MENU);
   const reward = batch[0].rewardCredits;
-  const text = `\u{1F4CB} <b>${platform === "telegram" ? "Obuna" : "Instagram follow"} vazifalari (${batch.length} ta):</b>
+  const text = `📋 <b>Vazifalar: ${batch.length} ta kanal</b>
 
-Har bir havolani oching, ${platform === "telegram" ? "obuna bo\u2018ling" : "follow qiling"}, so\u2018ng tasdiqlash tugmasini bosing.
-Har biri uchun: <b>+${reward}</b> kredit.
+Qanday bajariladi:
+1. Quyidagi havolalardan kanalga kiring
+2. ${platform === "telegram" ? "Obuna bo‘ling" : "Follow qiling"}
+3. Pastdagi <b>“✅ Obuna bo‘ldim”</b> tugmasini bosing — bot o‘zi tekshiradi
 
-` + batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " \u{1F501}" : ""}`).join("\n") + (platform === "instagram" ? "\n\n\u26A0\uFE0F Instagram o\u2018zi tasdiqlash asosida ishlaydi \u2014 soxta tasdiqlar admin tomonidan tekshiriladi." : "");
-  const rows = batch.map((t, i) => [{ text: `\u{1F517} ${i + 1}. ${t.destinationTitle}`.slice(0, 60), url: t.destinationUrl }]);
-  rows.push([{ text: platform === "telegram" ? "\u2705 Obuna bo\u2018ldim" : "\u2705 Bajardim", callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
-  rows.push([{ text: "\u{1F504} Yangilash", callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
+Har bir obuna uchun: <b>+${reward} kredit</b>
+
+` + batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") + (platform === "instagram" ? "\n\n⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi." : "");
+  const rows = batch.map((t, i) => [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 60), url: t.destinationUrl }]);
+  rows.push([{ text: platform === "telegram" ? "✅ Obuna bo‘ldim" : "✅ Bajardim", callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
+  rows.push([{ text: "🔄 Yangilash", callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
   return send(chat, text, inline(rows));
 }
 var channelsOf = (u) => db.channels.filter((c) => c.ownerId === u.id || c.controllers.some((k) => k.userId === u.id));
 async function showChannels(u, chat) {
   const chs = channelsOf(u);
-  const text = `\u{1F4E2} <b>Sizning kanallaringiz:</b> ${chs.length} ta
+  const text = `📢 <b>Kanallaringiz: ${chs.length} ta</b>
 
-` + (chs.length ? chs.map((c) => `\u2022 <b>${esc(c.title)}</b> (@${esc(c.username)}) \u2014 ${c.verifiedSubscribers} tasdiqlangan, ${c.pendingSubscriptions} kutilmoqda${c.ownerId !== u.id ? " (nazoratchi)" : ""}`).join("\n") : "Hali kanal ulanmagan. Botni kanalingizga <b>administrator</b> qilib qo\u2018shing va \u201C\u2795 Kanal qo\u2018shish\u201D ni bosing.") + `
+` + (chs.length ? chs.map((c) => `• <b>${esc(c.title)}</b> (@${esc(c.username)})\n   obunachi: ${c.verifiedSubscribers} ta keldi • ${c.pendingSubscriptions} ta kutilmoqda${c.ownerId !== u.id ? " (nazoratchi)" : ""}`).join("\n") : `Hali kanal ulanmagan. Ulash uchun:
+1. Botni kanalingizga <b>administrator</b> qiling
+2. “➕ Kanal qo‘shish” tugmasini bosing
+3. Kanal manzilini yuboring (masalan: @kanal_nomi)
+
+Birinchi marta ulaganingizda <b>+10 kredit</b> sovg‘a olasiz.`) + `
 
 ${balanceLine(u)}`;
-  const rows = chs.map((c) => [{ text: `\u{1F6D2} ${c.title}`.slice(0, 40), callback_data: `ord:${c.id}` }, ...c.ownerId === u.id ? [{ text: "\u{1F511} Kod", callback_data: `ctl:${c.id}` }] : []]);
-  rows.push([{ text: "\u2795 Kanal qo\u2018shish", callback_data: "chadd" }, { text: "\u{1F511} Kod kiritish", callback_data: "ctlin" }]);
+  const rows = chs.map((c) => [{ text: `🛒 ${c.title}`.slice(0, 40), callback_data: `ord:${c.id}` }, ...c.ownerId === u.id ? [{ text: "🔑 Kod", callback_data: `ctl:${c.id}` }] : []]);
+  rows.push([{ text: "➕ Kanal qo‘shish", callback_data: "chadd" }, { text: "🔑 Kod kiritish", callback_data: "ctlin" }]);
   return send(chat, text, inline(rows));
 }
 async function showOrders(u, chat) {
   const os = db.orders.filter((o) => o.userId === u.id).slice(-10).reverse();
-  const text = `\u{1F6D2} <b>Buyurtmalaringiz:</b> ${db.orders.filter((o) => o.userId === u.id).length} ta
+  const text = `🛒 <b>Buyurtmalaringiz: ${db.orders.filter((o) => o.userId === u.id).length} ta</b>
 ${balanceLine(u)}
 
-` + (os.length ? os.map((o) => `${o.platform === "telegram" ? "\u{1F4E2}" : "\u{1F4F8}"} <b>${esc(o.destinationTitle)}</b>
-   ${o.verifiedQuantity}/${o.requestedQuantity} bajarildi \u2022 ${o.status === "active" ? "\u{1F7E2} faol" : o.status === "completed" ? "\u2705 yakunlangan" : "\u26D4 bekor"} \u2022 ${o.totalCost} kredit`).join("\n\n") : "Hali buyurtma yo\u2018q. \u201C\u{1F4E2} Kanallarim\u201D orqali buyurtma bering.");
-  const rows = os.filter((o) => o.status === "active").map((o) => [{ text: `\u274C Bekor: ${o.destinationTitle}`.slice(0, 45), callback_data: `cx:${o.id}` }]);
+` + (os.length ? os.map((o) => `${o.platform === "telegram" ? "📢" : "📸"} <b>${esc(o.destinationTitle)}</b>
+   keldi: ${o.verifiedQuantity} / ${o.requestedQuantity} ta • ${o.status === "active" ? "🟢 davom etyapti" : o.status === "completed" ? "✅ tugagan" : "⛔ bekor qilingan"} • ${o.totalCost} kredit`).join("\n\n") : "Hali buyurtma bermagansiz.\n\n“📢 Kanallarim” → kanalingizni tanlang → nechta obunachi kerakligini yozing.");
+  const rows = os.filter((o) => o.status === "active").map((o) => [{ text: `❌ Bekor qilish: ${o.destinationTitle}`.slice(0, 45), callback_data: `cx:${o.id}` }]);
   return send(chat, text, rows.length ? inline(rows) : MENU);
 }
 async function showInstagram(u, chat) {
-  if (!S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli hozircha o\u2018chirilgan.", MENU);
+  if (!S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", MENU);
   const ps = db.igProfiles.filter((p) => p.userId === u.id);
-  const text = `\u{1F4F8} <b>Instagram moduli</b>
+  const text = `📸 <b>Instagram</b>
 
-Kredit umumiy, lekin vazifalar navbati Telegram\u2019dan mustaqil.
+Kredit Telegram bilan bitta, lekin vazifalar alohida.
 
-` + (ps.length ? ps.map((p) => `\u2022 @${esc(p.username)} \u2014 ${p.selfReportedFollowers} follower`).join("\n") : "Profil yo\u2018q.") + `
+` + (ps.length ? ps.map((p) => `• @${esc(p.username)} — ${p.selfReportedFollowers} follower`).join("\n") : "Profil ulanmagan.") + `
 
 ${balanceLine(u)}`;
-  const rows = ps.map((p) => [{ text: `\u{1F6D2} @${p.username}`, callback_data: `ord:${p.id}` }]);
-  rows.push([{ text: "\u2795 Profil qo\u2018shish", callback_data: "igadd" }, { text: "\u{1F4CB} Instagram vazifalar", callback_data: "tasks:ig" }]);
+  const rows = ps.map((p) => [{ text: `🛒 @${p.username}`, callback_data: `ord:${p.id}` }]);
+  rows.push([{ text: "➕ Profil qo‘shish", callback_data: "igadd" }, { text: "📋 Instagram vazifalar", callback_data: "tasks:ig" }]);
   return send(chat, text, inline(rows));
 }
 async function showReferrals(u, chat) {
   const refs = db.referrals.filter((r) => r.referrerId === u.id);
   const paid = refs.filter((r) => r.bonusIssued).length;
-  return send(chat, `\u{1F465} <b>Referal tizimi</b>
+  return send(chat, `👥 <b>Referal tizimi</b>
 
-Taklif qilingan do\u2018st kamida bitta vazifani <b>rasmiy tasdiqlangan</b> holda bajarsa, sizga <b>+${S().creditRewardReferral}</b> kredit beriladi.
+Do‘stingizni taklif qiling. U shu botga kirib <b>kamida bitta vazifani</b> bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> beriladi.
 
-Taklif qilinganlar: ${refs.length} ta \u2022 Mukofot olingan: ${paid} ta
+Taklif qilganlar: ${refs.length} ta • Mukofot olganlar: ${paid} ta
 
-\u{1F517} Havolangiz:
-https://t.me/${S().botUsername}?start=${u.referralCode}`, MENU);
+🔗 Sizning havolangiz:
+https://t.me/${S().botUsername}?start=${u.referralCode}
+
+Shu havolani do‘stlaringizga yuboring.`, MENU);
 }
 async function showStats(u, chat) {
   const c = u.credits;
-  return send(chat, `\u{1F4CA} <b>Statistika</b>
+  return send(chat, `📊 <b>Statistika</b>
 
-\u{1F464} ${esc(u.displayName)}
-\u{1F194} ${u.telegramId}
-\u{1F4B0} Balans: ${c.available} kredit
-\u{1F512} Band: ${c.reserved}
-\u{1F4B8} Sarflangan: ${c.spent}
-\u21A9\uFE0F Qaytarilgan: ${c.refunded}
-\u2705 Bajarilgan vazifalar: ${u.completedTasksCount}
-\u{1F4E2} Kanallar: ${channelsOf(u).length} ta
-\u{1F6D2} Faol buyurtmalar: ${db.orders.filter((o) => o.userId === u.id && o.status === "active").length} ta`, MENU);
+👤 ${esc(u.displayName)}
+🆔 ${u.telegramId}
+
+💰 Balans: <b>${c.available}</b> kredit — hozir ishlatsa bo‘ladigan kredit
+🔒 Band: ${c.reserved} kredit — faol buyurtmaga band qilingan
+💸 Sarflangan: ${c.spent} kredit
+↩️ Qaytarilgan: ${c.refunded} kredit
+✅ Bajarilgan vazifalar: ${u.completedTasksCount} ta
+📢 Kanallar: ${channelsOf(u).length} ta
+🛒 Faol buyurtmalar: ${db.orders.filter((o) => o.userId === u.id && o.status === "active").length} ta`, MENU);
 }
 async function showHelp(chat) {
-  return send(chat, "\u{1F6DF} <b>Yordam markazi</b>\n\nSavol yoki shikoyatingiz bo\u2018lsa, murojaat yuboring \u2014 adminlar ko\u2018rib chiqadi.", inline([[{ text: "\u{1F4DD} Shikoyat yuborish", callback_data: "cmp:new" }]]));
+  const text = `🛟 <b>Yordam — botning to‘liq qo‘llanmasi</b>
+
+<b>Bu bot nima qiladi?</b>
+Bot kanallarga obunachi yig‘ishga yordam beradi. Siz boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz, keyin shu kredit bilan o‘z kanalingizga obunachi yig‘asiz. Bu yerda pul ishlatilmaydi.
+
+<b>Kredit nima?</b>
+Kredit — bot ichidagi hisob birligi. 1 obunachi = ${S().creditRewardTelegram} kredit. Kreditni naqd pulga aylantirib bo‘lmaydi.
+
+<b>Pastdagi tugmalar nima qiladi:</b>
+
+📋 <b>Vazifalar</b> — obuna bo‘lish uchun kanallar ro‘yxati. Har biriga obuna bo‘lib “✅ Obuna bo‘ldim” tugmasini bosing. Har biri uchun +${S().creditRewardTelegram} kredit.
+
+📢 <b>Kanallarim</b> — o‘z kanalingizni ulash va unga obunachi buyurtish. Ichida: “➕ Kanal qo‘shish” (yangi kanal ulash), kanal nomi (buyurtma berish), “🔑 Kod” (kanalingizga yordamchi qo‘shish uchun bir martalik kod).
+
+🛒 <b>Buyurtmalarim</b> — bergan buyurtmalaringiz va ularning holati. Bekor qilsangiz, bajarilmagan qismining krediti qaytadi.
+
+📸 <b>Instagram</b> — Instagram profilini ulash bo‘limi (hozircha o‘chirilgan).
+
+👥 <b>Referal tizimi</b> — taklif havolangiz. Do‘stingiz shu havola bilan kirib bitta vazifa bajarsa, sizga +${S().creditRewardReferral} kredit.
+
+📊 <b>Statistika</b> — balans, sarflangan kredit, bajarilgan vazifalar soni, kanallar soni.
+
+🛟 <b>Yordam</b> — shu qo‘llanma va admin bilan bog‘lanish.
+
+⚙️ <b>Sozlamalar</b> — soatlik hisobotni yoqish yoki o‘chirish.
+
+<b>Muhim qoidalar:</b>
+• Obuna haqiqiy tekshiriladi — obuna bo‘lmasangiz kredit berilmaydi.
+• Obunadan chiqsangiz, kredit qaytarib olinadi.
+• Soxta harakat qilsangiz hisob bloklanadi.
+• Kanal ulash uchun bot o‘sha kanalda administrator bo‘lishi shart.
+• Kanal ulash bonusi (+${S().creditRewardChannelLink} kredit) faqat bir marta beriladi.
+
+Savolingiz yoki muammoingiz bo‘lsa — pastdagi <b>“📝 Shikoyat yuborish”</b> tugmasini bosing, admin javob beradi.`;
+  return send(chat, text, inline([
+    [{ text: "📋 Vazifalarga o‘tish", callback_data: "tasks:tg" }],
+    [{ text: "📝 Shikoyat yuborish", callback_data: "cmp:new" }]
+  ]));
 }
 async function showSettings(u, chat) {
-  return send(chat, `\u2699\uFE0F <b>Sozlamalar</b>
+  return send(chat, `⚙️ <b>Sozlamalar</b>
 
-Til: \u{1F1FA}\u{1F1FF} O\u2018zbekcha
-Soatlik hisobot: ${u.notifications ? "yoqilgan \u2705" : "o\u2018chirilgan \u26D4"}`, inline([[{ text: u.notifications ? "\u{1F515} Hisobotni o\u2018chirish" : "\u{1F514} Hisobotni yoqish", callback_data: "notif" }]]));
+Til: 🇺🇿 O‘zbekcha
+Soatlik hisobot: ${u.notifications ? "yoqilgan ✅ (har soatda nechta obunachi kelgani haqida xabar keladi)" : "o‘chirilgan ⛔"}`, inline([[{ text: u.notifications ? "🔕 Hisobotni o‘chirish" : "🔔 Hisobotni yoqish", callback_data: "notif" }]]));
 }
 var CATEGORIES = [
   "Obunachilar kamayib ketdi",
   "Buyurtmam bajarilmayapti",
-  "Obunachilar noto\u2018g\u2018ri hisoblanmoqda",
+  "Obunachilar noto‘g‘ri hisoblanmoqda",
   "Kanalimda texnik muammo bor",
   "Kanalimga ruxsatsiz buyurtma berilgan",
   "Boshqa muammo",
-  "Shikoyatimni o\u2018zim yozaman"
+  "Shikoyatimni o‘zim yozaman"
 ];
+
 async function sponsorGate(u, chat) {
   const missing = [];
   for (const sp of db.sponsors.filter((s) => s.isActive && s.isMandatory)) {
@@ -679,17 +733,18 @@ async function createOrder(u, destId, qty, chat) {
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
   if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", MENU);
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", MENU);
-  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Miqdor 10 dan 10000 gacha butun son bo\u2018lishi kerak. Qayta kiriting:");
+  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:");
   const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
-    return send(chat, `\u274C Kredit yetarli emas!
-Talab: ${chk.totalCost}
-Mavjud: ${u.credits.available}
-Kamchilik: ${chk.shortage}
+    return send(chat, `\u274C <b>Kredit yetmayapti</b>
 
-\u{1F4CB} Vazifalarni bajarib kredit to\u2018plang.`, MENU);
+Kerak: ${chk.totalCost} kredit
+Sizda: ${u.credits.available} kredit
+Yetmayapti: ${chk.shortage} kredit
+
+Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har bir obuna uchun ${S().creditRewardTelegram} kredit beriladi.`, MENU);
   }
   u.credits.available -= chk.totalCost;
   u.credits.reserved += chk.totalCost;
@@ -718,10 +773,11 @@ Kamchilik: ${chk.shortage}
   save();
   return send(chat, `\u{1F6D2} <b>Buyurtma qabul qilindi!</b>
 
-\u2022 ${esc(o.destinationTitle)}
-\u2022 Miqdor: ${qty}
-\u2022 Narx: ${chk.totalCost} kredit (band qilindi)
-\u2022 FIFO navbatiga qo\u2018yildi.`, MENU);
+\u2022 Kanal: ${esc(o.destinationTitle)}
+\u2022 Soni: ${qty} ta obunachi
+\u2022 Narxi: ${chk.totalCost} kredit (hisobingizda band qilindi)
+
+Obunachilar navbat bilan qo\u2018shiladi. Holatini \u201C\u{1F6D2} Buyurtmalarim\u201D da ko\u2018rasiz.`, MENU);
 }
 async function cancelOrder(u, orderId, chat) {
   const o = db.orders.find((x) => x.id === orderId && x.userId === u.id);
@@ -743,24 +799,25 @@ async function cancelOrder(u, orderId, chat) {
   }
   addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id });
   save();
-  return send(chat, `\u21A9\uFE0F Buyurtma bekor qilindi.
-Bajarilgan qism saqlandi, ${refundableUnits} ta bajarilmagan uchun <b>${refundCredits}</b> kredit qaytarildi.
+  return send(chat, `\u21A9\uFE0F <b>Buyurtma bekor qilindi</b>
+
+Kelgan obunachilar saqlanadi (${o.verifiedQuantity} ta), bajarilmagan ${refundableUnits} ta uchun <b>${refundCredits} kredit</b> qaytarildi.
 ${balanceLine(u)}`, MENU);
 }
 async function addChannel(u, text, chat) {
   const uname = text.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
-  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return send(chat, "Username noto\u2018g\u2018ri. Masalan: <code>@my_channel</code>. Qayta yuboring yoki menyudan tanlang.");
+  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return send(chat, "Manzil noto\u2018g\u2018ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel");
   const info = await tg("getChat", { chat_id: `@${uname}` });
-  if (!info.ok || info.result.type !== "channel") return send(chat, "\u274C Kanal topilmadi (ommaviy kanal bo\u2018lishi kerak).");
+  if (!info.ok || info.result.type !== "channel") return send(chat, "\u274C Bu manzilda kanal topilmadi.\n\nKanal <b>ommaviy (public)</b> bo\u2018lishi va manzili @ bilan yozilishi kerak.");
   const ch = info.result;
   const botMe = await checkBotAdmin(ch.id);
-  if (!botMe) return send(chat, "\u274C Bot bu kanalda administrator emas. Botni administrator qilib qo\u2018shing va qayta yuboring.");
+  if (!botMe) return send(chat, "\u274C Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari \u2192 Administratorlar \u2192 botni qo\u2018shib, qayta yuboring.");
   const me = await tg("getChatMember", { chat_id: ch.id, user_id: u.telegramId });
-  if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, "\u274C Siz bu kanalning administratori emassiz. Boshqa odam kanaliga o\u2018zingizni egasi qilib ulash mumkin emas.");
+  if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, "\u274C Siz bu kanalning administratori emassiz.\n\nFaqat o\u2018zingiz boshqaradigan kanalni ulash mumkin.");
   const existing = db.channels.find((c) => c.channelId === String(ch.id));
   if (existing) {
     u.state = null;
-    return send(chat, existing.ownerId === u.id ? "Bu kanal allaqachon ulangan." : "\u274C Bu kanal boshqa foydalanuvchi nomida ulangan. Nazoratchi kodi orqali qo\u2018shiling.", MENU);
+    return send(chat, existing.ownerId === u.id ? "Bu kanal allaqachon ulangan \u2014 qayta ulash shart emas." : "\u274C Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, \u201C\u{1F511} Kod kiritish\u201D orqali nazoratchi bo\u2018lasiz.", MENU);
   }
   db.channels.push({
     id: nid("ch"),
@@ -791,7 +848,8 @@ async function addChannel(u, text, chat) {
   return send(chat, `\u{1F4E2} <b>Kanal ulandi!</b>
 
 \u2022 ${esc(ch.title)} (@${esc(ch.username || uname)})
-\u2022 Bot admin huquqi: tasdiqlangan \u2705` +
+\u2022 Bot kanalda administrator \u2014 tasdiqlandi \u2705
+\nEndi \u201C\u{1F6D2} Buyurtmalarim\u201D emas, \u201C\u{1F4E2} Kanallarim\u201D dan kanalingizni tanlab obunachi buyurtib berishingiz mumkin.` +
     (linkBonus > 0
       ? `
 \u{1F381} Kanal ulaganingiz uchun <b>+${linkBonus} kredit</b> sovg'a!\n${balanceLine(u)}`
@@ -869,46 +927,29 @@ async function enterControllerCode(u, code, chat) {
 function guideText(u) {
   const bonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
   const per = S().creditRewardTelegram;
-  return `\u{1F4D6} <b>Bot qanday ishlaydi — qisqa yo\u2018riqnoma</b>
+  return `📖 <b>Bot qanday ishlaydi</b>
 
-` +
-    (bonus > 0 ? `\u{1F381} Kanalingizni ulaganingizda <b>+${bonus} kredit</b> sovg\u2018a olasiz. ` : ``) +
-    `Kredit \u2014 bu bot ichidagi pul: uni vazifa bajarib ishlaysiz va o\u2018z kanalingizga obunachi buyurtib sarflaysiz.
+Bot ikki ish uchun kerak:
+1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz
+2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz
 
-` +
-    `<b>1-qadam \u2014 Kredit ishlash</b>
-` +
-    `\u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing. Bot sizga 10 tagacha kanal beradi. Har bir kanalga obuna bo\u2018ling, so\u2018ng \u201C\u2705 Obuna bo\u2018ldim\u201D tugmasini bosing \u2014 bot obunani o\u2018zi tekshiradi va har biri uchun <b>+${per} kredit</b> beradi.
+💰 <b>Kredit nima?</b> — bu bot ichidagi hisob birligi. 1 obunachi = ${per} kredit. Pul emas, naqd qilib bo‘lmaydi.
 
-` +
-    `<b>2-qadam \u2014 Kanalingizni ulash</b>
-` +
-    `\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo\u2018shish\u201D. Avval botni kanalingizga <b>administrator</b> qilib qo\u2018shing, keyin kanal username\u2019ini yuboring. Siz faqat o\u2018zingiz admin bo\u2018lgan kanalni ulay olasiz.` +
-    (bonus > 0 ? ` Kanal ulangach bir martalik <b>+${bonus} kredit</b> beriladi.` : ``) + `
+1️⃣ <b>Kredit ishlash</b>
+“📋 Vazifalar” tugmasini bosing → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim” tugmasini bosing. Bot obunani o‘zi tekshiradi va har biri uchun <b>+${per} kredit</b> beradi.
 
-` +
-    `<b>3-qadam \u2014 Buyurtma berish</b>
-` +
-    `Kanalingizni tanlab, nechta obunachi kerakligini yozing. Har bir obunachi ${per} kredit. Kredit band qilinadi va FIFO navbatiga qo\u2018yiladi: boshqa foydalanuvchilar obuna bo\u2018lganda avtomatik tasdiqlanadi.
+2️⃣ <b>Kanalingizni ulash</b>
+Avval botni kanalingizga <b>administrator</b> qiling. Keyin “📢 Kanallarim” → “➕ Kanal qo‘shish” → kanal manzilini yuboring.
+${bonus > 0 ? `Birinchi marta ulaganingizda <b>+${bonus} kredit</b> sovg‘a oladi.\n` : ""}
+3️⃣ <b>Obunachi buyurtish</b>
+“📢 Kanallarim” dan kanalingizni tanlang va nechta obunachi kerakligini yozing. Kredit darhol band qilinadi, obunachilar navbat bilan qo‘shiladi.
 
-` +
-    `<b>4-qadam \u2014 Referal</b>
-` +
-    `\u201C\u{1F465} Referal tizimi\u201D dan havolangizni oling. Do\u2018stingiz shu havola orqali kirib birinchi vazifasini bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b>.
+4️⃣ <b>Referal</b>
+“👥 Referal tizimi” da shaxsiy havolangiz bor. Do‘stingiz shu havola bilan kirib bitta vazifa bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> beriladi.
 
-` +
-    `<b>Foydali ma\u2019lumot</b>
-` +
-    `\u2022 \u201C\u{1F6D2} Buyurtmalarim\u201D \u2014 buyurtma holati va bekor qilib kreditni qaytarish
-` +
-    `\u2022 \u201C\u{1F4CA} Statistika\u201D \u2014 balans, bajarilgan vazifalar, kanallar
-` +
-    `\u2022 \u201C\u2699\uFE0F Sozlamalar\u201D \u2014 soatlik hisobotni yoqish/o\u2018chirish
-` +
-    `\u2022 \u201C\u{1F6DF} Yordam\u201D \u2014 muammo bo\u2018lsa shikoyat yuboring, admin javob beradi
+❓ Har bir tugma nima qilishini bilish uchun “🛟 Yordam” tugmasini bosing.
 
-` +
-    `Pastdagi menyudan boshlang \u2193`;
+Pastdagi menyudan boshlang ↓`;
 }
 async function handleMessage(msg) {
   if (msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
@@ -943,6 +984,10 @@ ${balanceLine(u)}`, MENU);
     }
     await sponsorGate(u, chat);
     return;
+  }
+  if (/^\/(help|yordam|qollanma)/i.test(text)) {
+    u.state = null;
+    return showHelp(chat);
   }
   if (text.startsWith("/admin") || text.startsWith("/") && isAdmin(u.telegramId)) {
     if (isAdmin(u.telegramId)) return handleAdmin(u, text, chat);
@@ -1004,7 +1049,7 @@ async function handleCallback(cq) {
       return verifyBatch(u, arg === "ig" ? "instagram" : "telegram", chat);
     case "chadd":
       u.state = { type: "add_channel" };
-      return send(chat, "\u{1F4E2} Kanal username\u2019ini yuboring (masalan <code>@my_channel</code>).\n\nAvval botni kanalga <b>administrator</b> qilib qo\u2018shing. Bekor qilish: /cancel");
+      return send(chat, "\u{1F4E2} <b>Kanal ulash \u2014 3 qadam</b>\n\n1. Kanalingiz sozlamalariga kirib, botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBirinchi marta ulaganingizda <b>+10 kredit</b> sovg\u2018a.\n\nBekor qilish: /cancel");
     case "igadd":
       u.state = { type: "add_ig" };
       return send(chat, "\u{1F4F8} Instagram username yoki havolasini yuboring. Bekor qilish: /cancel");
@@ -1016,12 +1061,14 @@ async function handleCallback(cq) {
       if (!isTg && d.userId !== u.id) return;
       u.state = { type: "order_qty", destId: arg };
       const unit = isTg ? S().creditRewardTelegram : S().creditRewardInstagram;
-      return send(chat, `\u{1F6D2} <b>${esc(isTg ? d.title : "@" + d.username)}</b> uchun nechta ${isTg ? "obunachi" : "follower"} kerak?
+      return send(chat, `\u{1F6D2} <b>${esc(isTg ? d.title : "@" + d.username)}</b>
 
-Narx: ${unit} kredit/dona \u2022 ${balanceLine(u)}
-Maksimal: ${Math.floor(u.credits.available / unit)} ta (10 dan 10000 gacha)
-
-Sonni yozing. Bekor qilish: /cancel`);
+Nechta ${isTg ? "obunachi" : "follower"} kerakligini yozing (10 dan 10000 gacha).
+\u2022 Narx: ${unit} kredit / 1 ta
+\u2022 ${balanceLine(u)}
+\u2022 Bu kredit bilan ko\u2018pi bilan: ${Math.floor(u.credits.available / unit)} ta
+\u2022 Kredit hozir band qilinadi, obunachilar kelganda sarflanadi
+\nBekor qilish: /cancel`);
     }
     case "cx":
       return send(chat, "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi.", inline([[{ text: "Ha, bekor qilish", callback_data: `cxy:${arg}` }, { text: "Yo\u2018q", callback_data: "noop:0" }]]));
@@ -2077,7 +2124,7 @@ async function startBotLoop(bot) {
     S().botDisplayName = bot.displayName;
   }
   await tgWith(bot, "deleteWebhook", { drop_pending_updates: false });
-  await tgWith(bot, "setMyCommands", { commands: [{ command: "start", description: "Botni ishga tushirish" }, { command: "cancel", description: "Joriy amalni bekor qilish" }] });
+  await tgWith(bot, "setMyCommands", { commands: [{ command: "start", description: "Botni ishga tushirish" }, { command: "help", description: "To‘liq qo‘llanma" }, { command: "cancel", description: "Joriy amalni bekor qilish" }] });
   // Eski (offline davrdagi) xabarlar oqimini tashlab yuborish
   if (!bot.offset) {
     const skip = await tgWith(bot, "getUpdates", { offset: -1, limit: 1, timeout: 0 });
