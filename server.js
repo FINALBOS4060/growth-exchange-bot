@@ -129,8 +129,10 @@ var defaultSettings = () => ({
   creditRewardTelegram: 100,
   creditRewardInstagram: 100,
   creditRewardReferral: 200,
-  // Yangi ro'yxatdan o'tgan foydalanuvchiga bir martalik sovg'a
-  creditRewardSignup: 10,
+  // Yangi foydalanuvchi o'z kanalini ulaganda bir martalik sovg'a
+  creditRewardChannelLink: 10,
+  // Ro'yxatdan o'tish bonusi o'chirilgan (0) — sovg'a kanal ulanganda beriladi
+  creditRewardSignup: 0,
   isInstagramEnabled: false,
   // Instagram'ni tekshirib bo'lmaydi (o'zi tasdiqlaydi) — admin /igon bilan yoqadi
   isBotPaused: false,
@@ -777,12 +779,24 @@ async function addChannel(u, text, chat) {
     status: "active",
     createdAt: nowStr()
   });
+  // Bir martalik sovg'a: kanalini birinchi marta ulagan foydalanuvchiga
+  const linkBonus = u.channelBonusGiven ? 0 : Math.max(0, Number(S().creditRewardChannelLink) || 0);
+  if (linkBonus > 0) {
+    u.channelBonusGiven = true;
+    u.credits.available += linkBonus;
+    addTx(u, linkBonus, "channel_link_bonus", `Kanal ulandi: ${ch.title}`);
+  }
   u.state = null;
   save();
   return send(chat, `\u{1F4E2} <b>Kanal ulandi!</b>
 
 \u2022 ${esc(ch.title)} (@${esc(ch.username || uname)})
-\u2022 Bot admin huquqi: tasdiqlangan \u2705`, MENU);
+\u2022 Bot admin huquqi: tasdiqlangan \u2705` +
+    (linkBonus > 0
+      ? `
+\u{1F381} Kanal ulaganingiz uchun <b>+${linkBonus} kredit</b> sovg'a!\n${balanceLine(u)}`
+      : `
+${balanceLine(u)}`), MENU);
 }
 var BOT_ID = 0;
 async function checkBotAdmin(chatId) {
@@ -853,12 +867,12 @@ async function enterControllerCode(u, code, chat) {
   return send(chat, `\u274C ${lastReason}`, MENU);
 }
 function guideText(u) {
-  const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
+  const bonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
   const per = S().creditRewardTelegram;
   return `\u{1F4D6} <b>Bot qanday ishlaydi — qisqa yo\u2018riqnoma</b>
 
 ` +
-    (bonus > 0 ? `\u{1F381} Boshlash uchun hisobingizga <b>${bonus} kredit</b> sovg\u2018a qilindi. ` : ``) +
+    (bonus > 0 ? `\u{1F381} Kanalingizni ulaganingizda <b>+${bonus} kredit</b> sovg\u2018a olasiz. ` : ``) +
     `Kredit \u2014 bu bot ichidagi pul: uni vazifa bajarib ishlaysiz va o\u2018z kanalingizga obunachi buyurtib sarflaysiz.
 
 ` +
@@ -869,7 +883,8 @@ function guideText(u) {
 ` +
     `<b>2-qadam \u2014 Kanalingizni ulash</b>
 ` +
-    `\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo\u2018shish\u201D. Avval botni kanalingizga <b>administrator</b> qilib qo\u2018shing, keyin kanal username\u2019ini yuboring. Siz faqat o\u2018zingiz admin bo\u2018lgan kanalni ulay olasiz.
+    `\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo\u2018shish\u201D. Avval botni kanalingizga <b>administrator</b> qilib qo\u2018shing, keyin kanal username\u2019ini yuboring. Siz faqat o\u2018zingiz admin bo\u2018lgan kanalni ulay olasiz.` +
+    (bonus > 0 ? ` Kanal ulangach bir martalik <b>+${bonus} kredit</b> beriladi.` : ``) + `
 
 ` +
     `<b>3-qadam \u2014 Buyurtma berish</b>
@@ -1975,7 +1990,7 @@ var server = http.createServer((req, res) => {
             const { news, bots, ...rest } = s;
             return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
           }
-          for (const k of ["creditRewardSignup", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral"]) {
+          for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral"]) {
             if (b[k] === void 0) continue;
             const n = Number(b[k]);
             if (!Number.isFinite(n) || n < 0) throw new Error(k + " noto'g'ri son");
@@ -2135,29 +2150,21 @@ function botsInit() {
   save();
   return list;
 }
-// Bir martalik: bonus joriy etilishidan oldin ro'yxatdan o'tgan foydalanuvchilarga ham
-// 10 kreditni berib qo'yamiz (signupBonus maydoni bo'lmasa — hali olmagan).
-function backfillSignupBonus() {
-  const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
-  if (!bonus) return 0;
-  let n = 0;
-  for (const u of Object.values(db.users)) {
-    if (!u.credits || u.credits.signupBonus !== void 0) continue;
-    u.credits.signupBonus = bonus;
-    u.credits.available += bonus;
-    addTx(u, bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi (bir marta)");
-    n++;
-  }
-  if (n) {
-    save();
-    console.log(`Sovg'a backfill: ${n} foydalanuvchiga +${bonus} kredit`);
-  }
-  return n;
+// Bir martalik sozlama migratsiyasi: sovg'a ro'yxatdan o'tishda emas, kanal
+// ulanganda beriladi (creditRewardChannelLink).
+function migrateSettings() {
+  const s = S();
+  if (s.bonusRuleVersion === 2) return;
+  s.creditRewardSignup = 0;
+  if (typeof s.creditRewardChannelLink !== "number") s.creditRewardChannelLink = 10;
+  s.bonusRuleVersion = 2;
+  save();
+  console.log(`Sozlama: ro'yxat bonusi 0, kanal ulash bonusi ${s.creditRewardChannelLink}`);
 }
 async function main() {
   await openStore();
   botsInit();
-  backfillSignupBonus();
+  migrateSettings();
   server.on("error", (e) => {
     console.error("HTTP server xatosi:", e.message);
     process.exit(1);
