@@ -452,7 +452,12 @@ var STR = {
     guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {price} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{reward} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
     bonus_line: "\nBirinchi kanal uchun +{bonus} kredit sovg‘a.",
     bal: "💰 Balans: <b>{a}</b> kredit  •  🔒 Band: {r} kredit",
-    tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: hozir hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.\n\n{balance}",
+    tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: {reason}\n\n{balance}",
+    tasks_reason_orders: "hozir tizimda faol buyurtma yo‘q — hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.",
+    tasks_reason_done: "siz mavjud barcha kanallarga obuna bo‘lib bo‘lgansiz. Yangi buyurtma tushishi bilan vazifa shu yerda paydo bo‘ladi.",
+    tasks_reason_own: "mavjud buyurtmalar sizning kanalingizga tegishli — o‘z kanalingiz vazifa bo‘lib chiqmaydi.",
+    tasks_supply: "\nℹ️ Hozir tizimda {o} ta faol buyurtma, sizga mos {b} ta kanal bor — hammasi shu ro‘yxatda.",
+    tasks_already: "\n\n♻️ Bu kanal(lar) sizda allaqachon bor. Yangi buyurtmalar tushganda shu yerda paydo bo‘ladi.",
     tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nHar bir kanal qatorida: 🔗 havola va <b>⚠️ Shikoyat</b>.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
     tasks_btn_done: "✅ Obuna bo‘ldim",
     tasks_btn_refresh: "🔄 Yangilash",
@@ -530,7 +535,12 @@ var STR = {
     guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {price} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам. За каждую подписку +{reward} кредитов.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
     bonus_line: "\nЗа первый канал +{bonus} кредитов.",
     bal: "💰 Баланс: <b>{a}</b> кредитов  •  🔒 Резерв: {r}",
-    tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: сейчас никто не заказывал подписчиков. Попробуйте позже.\n\n{balance}",
+    tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: {reason}\n\n{balance}",
+    tasks_reason_orders: "сейчас нет активных заказов — никто ещё не заказывал подписчиков. Попробуйте позже.",
+    tasks_reason_done: "вы уже подписаны на все доступные каналы. Новые задания появятся здесь после новых заказов.",
+    tasks_reason_own: "доступные заказы относятся к вашему каналу — на свой канал задание не выдаётся.",
+    tasks_supply: "\nℹ️ Сейчас в системе {o} активных заказов, для вас доступно {b} каналов — все они в списке.",
+    tasks_already: "\n\n♻️ Этот канал уже есть в вашем списке. Новые задания появятся после новых заказов.",
     tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nВ строке каждого канала: 🔗 ссылка и <b>⚠️ Жалоба</b>.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
     tasks_btn_done: "✅ Я подписался",
     tasks_btn_refresh: "🔄 Обновить",
@@ -608,7 +618,12 @@ var STR = {
     guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {price} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies. Each subscription gives +{reward} credits.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
     bonus_line: "\n+{bonus} credits for your first channel.",
     bal: "💰 Balance: <b>{a}</b> credits  •  🔒 Reserved: {r}",
-    tasks_none: "📋 <b>No tasks yet</b>\n\nReason: nobody has ordered subscribers yet. Try again later.\n\n{balance}",
+    tasks_none: "📋 <b>No tasks yet</b>\n\nReason: {reason}\n\n{balance}",
+    tasks_reason_orders: "there are no active orders right now — nobody has ordered subscribers yet. Try again later.",
+    tasks_reason_done: "you are already subscribed to every available channel. New tasks will appear here as soon as new orders arrive.",
+    tasks_reason_own: "the available orders belong to your own channel — your channel never appears as a task for you.",
+    tasks_supply: "\nℹ️ There are {o} active orders in the system and {b} channels available for you — all of them are listed.",
+    tasks_already: "\n\n♻️ You already have this channel. New tasks will appear after new orders.",
     tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nEach channel row has 🔗 link and <b>⚠️ Complaint</b>.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
     tasks_btn_done: "✅ I subscribed",
     tasks_btn_refresh: "🔄 Refresh",
@@ -996,13 +1011,33 @@ function getBatch(u, platform) {
   if (open.length < 10) assignFresh(u, platform, 10 - open.length);
   return db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
 }
+// Nima uchun navbatda shuncha kanal borligini tushuntirish uchun hisob-kitob.
+function taskSupply(u, platform) {
+  const active = db.orders.filter((o) => o.status === "active" && o.platform === platform);
+  let mine = 0, own = 0, seen = 0;
+  for (const o of active) {
+    const dest = destOf(o.destinationId);
+    if (!dest) continue;
+    if (platform === "telegram" && (dest.ownerId === u.id || (dest.controllers || []).some((c) => c.userId === u.id))) {
+      own++;
+      continue;
+    }
+    if (db.tasks.some((t2) => t2.assignedTo === u.id && t2.destinationId === o.destinationId && (t2.status !== "CANCELLED" || t2.unsubscribed))) {
+      seen++;
+      continue;
+    }
+    mine++;
+  }
+  return { activeOrders: active.length, mine, own, seen };
+}
 // Foydalanuvchi oldingi 10 tani tugatmasa ham keyingi 10 tani ko'rishi mumkin (spec §7).
 function getNextBatch(u, platform) {
   const before = new Set(db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform).map((t) => t.id));
   assignFresh(u, platform, 10);
   const fresh = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status) && !before.has(t.id)).sort((a, b) => a.queueSequence - b.queueSequence);
   if (fresh.length) return fresh.slice(0, 10);
-  return getBatch(u, platform);
+  // Yangi vazifa yo'q — mavjudlarini qaytaramiz va buni matnda aytamiz.
+  return getBatch(u, platform).map((t) => ({ ...t, noMore: true }));
 }
 function checkOrderComplete(o) {
   if (o.status === "active" && o.verifiedQuantity + o.cancelledQuantity >= o.requestedQuantity) {
@@ -1179,11 +1214,18 @@ async function showTasks(u, platform, chat, next) {
   if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
   const batch = next ? getNextBatch(u, platform) : getBatch(u, platform);
-  if (!batch.length) return send(chat, T(u, "tasks_none", { balance: balanceLine(u) }), menuFor(u));
+  const supply = taskSupply(u, platform);
+  if (!batch.length) {
+    const key = !supply.activeOrders ? "tasks_reason_orders" : (supply.own > 0 && !supply.seen && !supply.mine) ? "tasks_reason_own" : "tasks_reason_done";
+    return send(chat, T(u, "tasks_none", { reason: T(u, key), balance: balanceLine(u) }), menuFor(u));
+  }
   const reward = batch[0].rewardCredits;
-  const text = T(u, "tasks_title", { n: batch.length, reward }) +
+  let text = T(u, "tasks_title", { n: batch.length, reward }) +
     batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") +
     (platform === "instagram" ? "\n\n" + T(u, "ig_note") : "");
+  // 10 tadan kam bo'lsa — sababini aytamiz (bot buzmagan, buyurtma shuncha).
+  if (batch.length < 10) text += T(u, "tasks_supply", { o: supply.activeOrders, b: batch.length });
+  if (batch.some((t) => t.noMore)) text += T(u, "tasks_already");
   // Har bir kanal uchun bitta qator: havola + shikoyat tugmasi yonma-yon.
   const rows = batch.map((t, i) => {
     const row = [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 34), url: t.destinationUrl }];
