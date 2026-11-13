@@ -123,6 +123,7 @@ var TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 var API = process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
 var ADMIN_IDS = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
 var ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+var ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 var DATA_FILE = process.env.DATA_FILE || path.join(ROOT, "data", "db.json");
 var DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 var PORT = Number(process.env.PORT || 3e3);
@@ -2075,40 +2076,218 @@ function audit(req, action, target, meta) {
     console.error("audit xatosi:", e.message);
   }
 }
+var SESSION_TTL_LONG = 30 * 24 * 36e5;
+var LOGIN_TRIES = new Map();
+var LOGIN_MAX = 6;
+var LOGIN_WINDOW = 15 * 6e4;
+function clientIp(req) {
+  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return xf || (req.socket && req.socket.remoteAddress) || "anonim";
+}
+function loginGate(ip) {
+  const r = LOGIN_TRIES.get(ip);
+  if (!r) return { blocked: false };
+  const spent = Date.now() - r.first;
+  if (spent > LOGIN_WINDOW) {
+    LOGIN_TRIES.delete(ip);
+    return { blocked: false };
+  }
+  if (r.n >= LOGIN_MAX) return { blocked: true, minutesLeft: Math.max(1, Math.ceil((LOGIN_WINDOW - spent) / 6e4)) };
+  return { blocked: false };
+}
+function loginFail(ip) {
+  const now = Date.now();
+  const r = LOGIN_TRIES.get(ip);
+  if (!r || now - r.first > LOGIN_WINDOW) LOGIN_TRIES.set(ip, { n: 1, first: now });
+  else r.n++;
+  if (LOGIN_TRIES.size > 800) LOGIN_TRIES.clear();
+  const cur = LOGIN_TRIES.get(ip);
+  return Math.max(0, LOGIN_MAX - (cur ? cur.n : 0));
+}
+function loginOk(ip) {
+  LOGIN_TRIES.delete(ip);
+}
+// Egasi: ADMIN_EMAIL (yoki "admin"/"owner") + ADMIN_PASSWORD.
+// ADMIN_EMAIL berilmagan bo'lsa eski xatti-harakat — faqat parol tekshiriladi.
+function ownerLoginOk(uname, pass) {
+  if (!pass || !ADMIN_PASSWORD) return false;
+  if (!checkPassPlain(pass, ADMIN_PASSWORD)) return false;
+  if (!ADMIN_EMAIL) return true;
+  return uname === ADMIN_EMAIL || uname === "admin" || uname === "owner";
+}
+function isSecureReq(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  return proto === "https" || !!(req.socket && req.socket.encrypted);
+}
 function loginPage(err) {
   return `<!doctype html><html lang="uz"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirish — Obuna 2X</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#080b11">
+<title>Kirish — Obuna 2X</title>
 <style>
-:root{color-scheme:dark}
+:root{color-scheme:dark;--bg:#070a10;--card:#0f1420;--line:#1d2636;--txt:#e9eef7;--dim:#8a98ad;--accent:#5b7cfa;--accent2:#8b5cf6;--err:#fca5a5}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#080b11;color:#e8edf6;font-family:"Inter","Segoe UI",system-ui,-apple-system,Arial}
-body::before,body::after{content:"";position:fixed;border-radius:50%;filter:blur(70px);opacity:.5;pointer-events:none}
-body::before{width:420px;height:420px;left:-120px;top:-140px;background:radial-gradient(circle,#25438f,transparent 65%)}
-body::after{width:380px;height:380px;right:-120px;bottom:-140px;background:radial-gradient(circle,#4c2d8c,transparent 65%)}
-.card{position:relative;width:100%;max-width:380px;background:linear-gradient(180deg,#121826,#0e1320);border:1px solid #1d2634;border-radius:18px;padding:30px 28px 26px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
-.logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#5b7cfa,#8b5cf6);display:grid;place-items:center;font-weight:800;font-size:15px;color:#fff;box-shadow:0 8px 22px rgba(91,124,250,.35);margin-bottom:16px}
-h1{font-size:19px;margin:0 0 6px;letter-spacing:-.2px}
-.hint{color:#8492a8;font-size:12.5px;margin:0 0 22px}
-label{display:block;font-size:11.5px;color:#93a1b8;font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin:14px 0 7px}
-input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #232d3f;background:#0a0f18;color:#e8edf6;font:inherit;transition:.16s}
-input:focus{outline:none;border-color:#5b7cfa;box-shadow:0 0 0 3px rgba(91,124,250,.18)}
-button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:10px;background:linear-gradient(180deg,#4b6cff,#2a4de0);color:#fff;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 8px 20px rgba(42,77,224,.3);transition:.16s}
-button:hover{filter:brightness(1.1)}
-.e{color:#fca5a5;font-size:13px;margin-top:14px;min-height:18px}
-.foot{margin-top:18px;color:#5f6c81;font-size:11.5px;text-align:center}
-</style></head><body>
-<form class="card" method="POST" action="/login">
-<div class="logo">2X</div>
-<h1>Obuna 2X</h1>
-<p class="hint">Administrator paneliga kirish</p>
-<label for="u">Foydalanuvchi nomi</label>
-<input id="u" name="username" autocomplete="username" autofocus required>
-<label for="p">Parol</label>
-<input id="p" name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Kirish</button>
-<div class="e">${err || ""}</div>
-<div class="foot">Faqat administratorlar uchun</div>
-</form></body></html>`;
+html,body{height:100%}
+body{margin:0;display:grid;place-items:center;padding:22px;background:var(--bg);color:var(--txt);
+font-family:"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial;font-size:14px;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body::before,body::after{content:"";position:fixed;z-index:0;border-radius:50%;filter:blur(80px);opacity:.55;pointer-events:none}
+body::before{width:460px;height:460px;left:-150px;top:-170px;background:radial-gradient(circle,#22437f,transparent 66%)}
+body::after{width:420px;height:420px;right:-150px;bottom:-180px;background:radial-gradient(circle,#4a2c88,transparent 66%)}
+.grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.5;
+background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+background-size:46px 46px;mask-image:radial-gradient(circle at 50% 35%,#000 0%,transparent 72%)}
+.wrap{position:relative;z-index:1;width:100%;max-width:404px}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:22px;padding-left:4px}
+.brand .mark{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;font-weight:800;font-size:14px;color:#fff;
+background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 10px 26px rgba(91,124,250,.4)}
+.brand b{font-size:15px;letter-spacing:-.2px;display:block;line-height:1.2}
+.brand span{font-size:11.5px;color:var(--dim);letter-spacing:.3px}
+.card{background:linear-gradient(180deg,#121826,#0d1220);border:1px solid var(--line);border-radius:20px;padding:28px 26px 24px;
+box-shadow:0 28px 70px rgba(0,0,0,.5),0 1px 0 rgba(255,255,255,.04) inset}
+h1{font-size:21px;margin:0 0 6px;letter-spacing:-.35px;font-weight:700}
+.sub{color:var(--dim);font-size:13px;margin:0 0 22px;line-height:1.5}
+label{display:block;font-size:11.5px;font-weight:600;letter-spacing:.45px;text-transform:uppercase;color:#95a3b9;margin:0 0 7px}
+.f{margin-bottom:15px}
+.inp{position:relative;display:flex;align-items:center}
+input[type=text],input[type=email],input[type=password]{width:100%;padding:12px 13px;border-radius:11px;border:1px solid #222c3e;background:#090e17;color:var(--txt);
+font:inherit;font-size:14px;transition:border-color .16s,box-shadow .16s,background .16s;outline:none}
+input::placeholder{color:#56637a}
+input:hover{border-color:#2b374d}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,124,250,.16);background:#0a101b}
+input:-webkit-autofill{-webkit-text-fill-color:var(--txt);-webkit-box-shadow:0 0 0 1000px #0a101b inset;caret-color:var(--txt)}
+.inp input[type=password],.inp input#password{padding-right:46px}
+.eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;display:grid;place-items:center;border:0;border-radius:9px;
+background:transparent;color:#7c8aa1;cursor:pointer;transition:.15s;font-size:15px}
+.eye:hover{background:#151d2c;color:#c8d3e5}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 18px}
+.chk{display:flex;align-items:center;gap:9px;color:#9aa8bd;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none;cursor:pointer;user-select:none;margin:0}
+.chk input{width:15px;height:15px;accent-color:var(--accent);margin:0;cursor:pointer}
+.btn{position:relative;width:100%;padding:12px 16px;border:0;border-radius:11px;color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer;
+background:linear-gradient(180deg,#4f6fff,#2a4de0);box-shadow:0 10px 24px rgba(42,77,224,.34);transition:.16s;display:flex;align-items:center;justify-content:center;gap:9px}
+.btn:hover{filter:brightness(1.08)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.75;cursor:default}
+.spin{width:15px;height:15px;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:sp .7s linear infinite;display:none}
+.btn.busy .spin{display:block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.alert{display:none;gap:9px;align-items:flex-start;margin:0 0 16px;padding:11px 12px;border-radius:11px;font-size:12.5px;line-height:1.45;
+background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.28);color:var(--err)}
+.alert.show{display:flex}
+.caps{display:none;margin:-6px 0 10px;font-size:11.5px;color:#fcd34d}
+.caps.show{display:block}
+.foot{margin-top:16px;text-align:center;color:#5b6779;font-size:11.5px;line-height:1.6}
+.foot b{color:#7b8798;font-weight:600}
+@media(max-width:420px){.card{padding:24px 18px 20px;border-radius:18px}h1{font-size:19px}}
+@media(prefers-reduced-motion:reduce){*{transition:0s!important;animation:0s!important}}
+</style></head>
+<body>
+<div class="grid"></div>
+<div class="wrap">
+  <div class="brand"><div class="mark">2X</div><div><b>Obuna 2X</b><span>boshqaruv paneli</span></div></div>
+  <form class="card" id="f" method="POST" action="/login" novalidate>
+    <h1>Xush kelibsiz</h1>
+    <p class="sub">Davom etish uchun administrator hisobingizga kiring.</p>
+    <div class="alert ${err ? "show" : ""}" id="err"><span>⚠️</span><span id="err-txt">${err}</span></div>
+    <div class="f">
+      <label for="username">Email yoki login</label>
+      <div class="inp"><input id="username" name="username" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="email@example.com" required autofocus></div>
+    </div>
+    <div class="f">
+      <label for="password">Parol</label>
+      <div class="inp">
+        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required>
+        <button class="eye" type="button" id="eye" aria-label="Parolni ko'rsatish" title="Parolni ko'rsatish">👁</button>
+      </div>
+      <div class="caps" id="caps">Caps Lock yoqilgan</div>
+    </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" name="remember" value="1" id="remember"> 30 kun eslab qol</label>
+    </div>
+    <button class="btn" type="submit" id="go"><span class="spin"></span><span id="go-txt">Kirish</span></button>
+    <div class="foot">Faqat administratorlar uchun · <b>xavfsiz ulanish</b></div>
+  </form>
+</div>
+<script>
+(function () {
+  var f = document.getElementById('f');
+  var user = document.getElementById('username');
+  var pass = document.getElementById('password');
+  var go = document.getElementById('go');
+  var goTxt = document.getElementById('go-txt');
+  var err = document.getElementById('err');
+  var errTxt = document.getElementById('err-txt');
+  var caps = document.getElementById('caps');
+  var remember = document.getElementById('remember');
+
+  try {
+    var saved = localStorage.getItem('2x_login');
+    if (saved) { user.value = saved; remember.checked = true; }
+  } catch (e) {}
+
+  function showError(msg) {
+    errTxt.textContent = msg;
+    err.classList.add('show');
+  }
+  function clearError() { err.classList.remove('show'); }
+  function busy(on) {
+    go.disabled = on;
+    go.classList.toggle('busy', on);
+    goTxt.textContent = on ? 'Tekshirilmoqda…' : 'Kirish';
+  }
+
+  document.getElementById('eye').addEventListener('click', function () {
+    var show = pass.type === 'password';
+    pass.type = show ? 'text' : 'password';
+    this.textContent = show ? '🙈' : '👁';
+    this.setAttribute('aria-label', show ? "Parolni yashirish" : "Parolni ko'rsatish");
+    pass.focus();
+  });
+
+  pass.addEventListener('keyup', function (e) {
+    caps.classList.toggle('show', e.getModifierState && e.getModifierState('CapsLock'));
+  });
+  pass.addEventListener('blur', function () { caps.classList.remove('show'); });
+  [user, pass].forEach(function (el) { el.addEventListener('input', clearError); });
+
+  f.addEventListener('submit', function (ev) {
+    var u = user.value.trim();
+    var p = pass.value;
+    if (!u || !p) {
+      ev.preventDefault();
+      showError("Email/login va parolni kiriting.");
+      (u ? pass : user).focus();
+      return;
+    }
+    if (!window.fetch) return;
+    ev.preventDefault();
+    clearError();
+    busy(true);
+    fetch('/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ username: u, password: p, remember: remember.checked })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (r.ok && d && d.ok) {
+          try {
+            if (remember.checked) localStorage.setItem('2x_login', u);
+            else localStorage.removeItem('2x_login');
+          } catch (e) {}
+          location.replace(d.next || '/');
+          return;
+        }
+        busy(false);
+        showError((d && d.error) || 'Kirish amalga oshmadi. Qayta urinib ko\\'ring.');
+        pass.select();
+      });
+    }).catch(function () {
+      busy(false);
+      showError("Serverga ulanib bo'lmadi. Internetni tekshirib, qayta urinib ko'ring.");
+    });
+  });
+})();
+</script>
+</body></html>`;
 }
 // --- Admin panel API yordamchilari ---
 var startedAt = Date.now();
@@ -2598,38 +2777,62 @@ var server = http.createServer((req, res) => {
   if (url.pathname === "/login") {
     if (req.method === "POST") {
       return readRawBody(req).then((raw) => {
+        const isJson = String(req.headers["content-type"] || "").includes("application/json");
+        const fail = (code, msg) => {
+          if (isJson) return jsonOut(res, code, { ok: false, error: msg });
+          res.writeHead(code, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY" });
+          res.end(loginPage(msg));
+        };
+        if (!sameOrigin(req)) return fail(403, "So‘rov boshqa saytdan yuborilgan — rad etildi.");
+        const ip = clientIp(req);
+        const gate = loginGate(ip);
+        if (gate.blocked) return fail(429, "Juda ko‘p urinish. " + gate.minutesLeft + " daqiqadan keyin qayta urinib ko‘ring.");
         let body = {};
         try {
           body = JSON.parse(raw || "{}");
         } catch {
           const p = new URLSearchParams(raw || "");
-          body = { username: p.get("username") || "", password: p.get("password") || "" };
+          body = { username: p.get("username") || "", password: p.get("password") || "", remember: p.get("remember") === "1" };
         }
-        const uname = String((body && body.username) || "").trim();
+        const uname = String((body && body.username) || "").trim().toLowerCase();
         const pass = String((body && body.password) || "");
-        const ownerOk = pass && ADMIN_PASSWORD && checkPassPlain(pass, ADMIN_PASSWORD);
-        const adm = db.adminUsers.find((a) => a.username.toLowerCase() === uname.toLowerCase());
-        if (ownerOk || (adm && checkPass(pass, adm.passHash))) {
-          const role = ownerOk ? "owner" : adm.role;
-          const tok = crypto.randomBytes(24).toString("hex");
-          SESSIONS.set(tok, { username: ownerOk ? "owner" : adm.username, role, exp: Date.now() + SESSION_TTL });
-          if (adm) {
-            adm.lastLoginAt = nowStr();
-            save();
-          }
-          audit({ auth: { username: ownerOk ? "owner" : adm.username, role } }, "login", ownerOk ? "owner" : adm.username);
-          res.writeHead(302, {
-            "set-cookie": "sid=" + tok + "; HttpOnly; Path=/; SameSite=Lax; Max-Age=" + Math.floor(SESSION_TTL / 1e3),
-            location: "/"
-          });
-          res.end();
+        const remember = !!(body && (body.remember === true || body.remember === "1" || body.remember === "on"));
+        const adm = db.adminUsers.find((x) => x.username.toLowerCase() === uname);
+        let role = "";
+        let name = "";
+        if (adm && pass && checkPass(pass, adm.passHash)) {
+          role = adm.role;
+          name = adm.username;
+        } else if (ownerLoginOk(uname, pass)) {
+          role = "owner";
+          name = ADMIN_EMAIL || "owner";
+        }
+        if (!role) {
+          const left = loginFail(ip);
+          audit({ auth: { username: "anonim", role: "guest" }, headers: { "x-forwarded-for": ip } }, "login_failed", String(uname).slice(0, 64));
+          if (left === 0) return fail(429, "Juda ko‘p urinish. 15 daqiqadan keyin qayta urinib ko‘ring.");
+          return fail(401, "Email yoki parol xato. Qolgan urinish: " + left + ".");
+        }
+        loginOk(ip);
+        const ttl = remember ? SESSION_TTL_LONG : SESSION_TTL;
+        const tok = crypto.randomBytes(24).toString("hex");
+        SESSIONS.set(tok, { username: name, role, exp: Date.now() + ttl });
+        if (adm) {
+          adm.lastLoginAt = nowStr();
+          save();
+        }
+        audit({ auth: { username: name, role }, headers: { "x-forwarded-for": ip } }, "login", name);
+        const cookie = "sid=" + tok + "; HttpOnly; Path=/; SameSite=Lax; Max-Age=" + Math.floor(ttl / 1e3) + (isSecureReq(req) ? "; Secure" : "");
+        if (isJson) {
+          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "set-cookie": cookie, "cache-control": "no-store" });
+          res.end(JSON.stringify({ ok: true, role: role, next: "/" }));
           return;
         }
-        res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
-        res.end(loginPage("Foydalanuvchi nomi yoki parol xato"));
+        res.writeHead(302, { "set-cookie": cookie, location: "/" });
+        res.end();
       });
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY" });
     res.end(loginPage(""));
     return;
   }
