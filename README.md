@@ -241,3 +241,10 @@ bir necha "kirish nuqtasi" qilish mumkin.
 `@Dunyo_Yangiliklari_Texno_bot` → kanal `@Dunyo_Yangiliklari_Texno`.
 Jadval: **06:00, 09:00, 12:00, 15:00, 18:00, 21:00** (Asia/Tashkent, har 3 soat).
 Model zanjiri + cooldown: bitta model limiti tugasa, keyingisiga o'tadi.
+
+### Diqqat: Render env o'zgaruvchilari
+
+Render API'da `PUT /v1/services/{id}/env-vars` **butun ro'yxatni almashtiradi** —
+yuborilmagan kalitlar o'chib ketadi. Har doim to'liq ro'yxatni yuboring yoki
+Dashboard'da bitta kalitni tahrirlang. `DATABASE_URL` o'chsa ilova `fayl` rejimiga
+tushadi va har restartda ma'lumot yo'qoladi (`/healthz` shuni `ok file` deb ko'rsatadi).
