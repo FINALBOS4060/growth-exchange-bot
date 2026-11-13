@@ -145,12 +145,13 @@ var defaultSettings = () => ({
     enabled: true,
     channel: "@WORLD_NEWS_1M",
     times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
-    model: "gemini-2.0-flash",
+    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
     apiKey: "",
     sent: [],
     history: [],
     lastPostAt: "",
     lastStatus: "",
+    lastModel: "",
     lastError: ""
   }
 });
@@ -1154,12 +1155,13 @@ function newsDefaults() {
     enabled: true,
     channel: "@WORLD_NEWS_1M",
     times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
-    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
     apiKey: process.env.GEMINI_API_KEY || "",
     sent: [],
     history: [],
     lastPostAt: "",
     lastStatus: "",
+    lastModel: "",
     lastError: ""
   };
 }
@@ -1169,6 +1171,10 @@ function newsCfg() {
   const d = newsDefaults();
   for (const k of Object.keys(d)) if (n[k] === void 0) n[k] = d[k];
   if (!Array.isArray(n.times)) n.times = d.times;
+  if (!Array.isArray(n.models) || !n.models.length) {
+    n.models = n.model ? [String(n.model)].concat(d.models) : d.models.slice();
+  }
+  delete n.model;
   if (!Array.isArray(n.sent)) n.sent = [];
   if (!Array.isArray(n.history)) n.history = [];
   if (!n.apiKey && process.env.GEMINI_API_KEY) n.apiKey = process.env.GEMINI_API_KEY;
@@ -1195,26 +1201,66 @@ function uzbNow() {
   const time = `${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
   return { date, time, full: `${date} ${time}` };
 }
-async function newsGenerate(cfg) {
-  if (!cfg.apiKey) throw new Error("Gemini API kaliti yo'q - /news sahifasida kiriting");
-  const last = cfg.history.slice(0, 12).map((h) => h.title).join("; ");
-  const prompt = `Sen o'zbek tilidagi texno-blogersan. Eng yangi IT/texnologiya yangiligini top va post yoz.` +
-    ` Oldingi mavzularni takrorlama: ${last || "yo'q"}.` +
-    ` Post 700 belgidan oshmasin, emoji ko'p bo'lsin, oxirida "IMAGE_URL: <rasm havolasi>" qatorini qo'sh.`;
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`, {
+async function newsHeadlines() {
+  const q = process.env.NEWS_RSS_QUERY || "technology";
+  try {
+    const r = await fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(q + " when:1d")}&hl=en-US&gl=US&ceid=US:en`, {
+      headers: { "user-agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(20e3)
+    });
+    const t = await r.text();
+    const titles = [...t.matchAll(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/g)].map((m) => m[1]).slice(1);
+    return titles.map((x) => x.replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim()).filter(Boolean).slice(0, 10);
+  } catch (e) {
+    console.error("News bot: RSS xatosi ->", e.message);
+    return [];
+  }
+}
+async function newsGemini(cfg, model, prompt) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-    signal: AbortSignal.timeout(60e3)
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 2500, temperature: 0.9 }
+    }),
+    signal: AbortSignal.timeout(75e3)
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Gemini ${r.status}: ${String((j.error && j.error.message) || "xato").slice(0, 200)}`);
+  if (!r.ok) {
+    const msg = String((j.error && j.error.message) || "xato");
+    const err = new Error(`Gemini ${r.status}: ${msg.slice(0, 160)}`);
+    err.status = r.status;
+    throw err;
+  }
   const cand = (j.candidates || [])[0] || {};
   const text = ((cand.content || {}).parts || []).map((p) => p.text || "").join("");
   if (!text.trim()) throw new Error("Gemini bo'sh javob qaytardi");
   return text;
 }
-async function newsPublish(trigger) {
+async function newsGenerate(cfg) {
+  if (!cfg.apiKey) throw new Error("Gemini API kaliti yo'q - /news sahifasida kiriting");
+  const last = cfg.history.slice(0, 12).map((h) => h.title).join("; ");
+  const heads = await newsHeadlines();
+  const prompt = `Sen o'zbek tilidagi texno-blogersan. Bugungi IT/texnologiya yangiligidan bitta post yoz.` +
+    (heads.length ? ` Bugungi sarlavhalar: ${heads.join(" | ")}. Shu sarlavhalardan eng qiziqarlisini tanla va o'zbek tilida tushuntir.` : " Eng so'nggi IT yangiligini top.") +
+    ` Oldingi mavzularni takrorlama: ${last || "yo'q"}.` +
+    ` Faqat texnologiya, AI, gadjet yoki dasturiy ta'minotga oid yangilikni tanla — janjal, siyosat, sport va shaxsiy hayot haqida yozma.` +
+    ` Post 700 belgidan oshmasin, emoji ko'p bo'lsin, oxirida "IMAGE_URL: <rasm havolasi>" qatorini qo'sh.`;
+  const errors = [];
+  for (const model of cfg.models) {
+    try {
+      const text = await newsGemini(cfg, model, prompt);
+      cfg.lastModel = model;
+      return text;
+    } catch (e) {
+      errors.push(`${model}: ${e.message}`);
+      console.error(`News bot: ${model} ishlamadi -> ${e.message}`);
+    }
+  }
+  throw new Error(`Barcha modellar ishlamadi: ${errors.slice(0, 3).join(" | ")}`);
+}
+async function newsPublish(trigger, dry) {
   const cfg = newsCfg();
   cfg.lastStatus = "yaratilmoqda";
   try {
@@ -1225,6 +1271,12 @@ async function newsPublish(trigger) {
     if (m) {
       image = m[1].trim();
       body = raw.replace(/IMAGE_URL:.*$/im, "").trim();
+    }
+    if (dry) {
+      cfg.lastStatus = "sinov";
+      cfg.lastError = "";
+      save();
+      return { ok: true, dry: true, text: body, model: cfg.lastModel };
     }
     let sent;
     if (image) {
@@ -1241,7 +1293,7 @@ async function newsPublish(trigger) {
     cfg.history.unshift({ at: stamp.full, title: body.split("\n")[0].slice(0, 80), trigger: trigger || "jadval" });
     cfg.history = cfg.history.slice(0, 50);
     save();
-    console.log(`News bot: post yuborildi (${cfg.channel}, ${trigger || "jadval"})`);
+    console.log(`News bot: post yuborildi (${cfg.channel}, ${trigger || "jadval"}, model: ${cfg.lastModel || "-"})`);
     return { ok: true, text: body };
   } catch (e) {
     cfg.lastStatus = "xato";
@@ -1323,13 +1375,14 @@ pre{white-space:pre-wrap;background:#0f1219;border:1px solid #2b3243;border-radi
   <select id="enabled"><option value="1">Yoqilgan</option><option value="0">To'xtatilgan</option></select>
   <div class="row">
     <div><label>Kanal (@yoki -100…)</label><input id="channel" placeholder="@WORLD_NEWS_1M"></div>
-    <div><label>Model</label><input id="model" placeholder="gemini-2.0-flash"></div>
+    <div><label>Modellar (tartib bo'yicha)</label><input id="models" placeholder="gemini-3.1-flash-lite, gemini-3.5-flash-lite"></div>
   </div>
   <label>Gemini API kaliti</label><input id="apiKey" type="password" placeholder="o'zgarmasin desangiz bo'sh qoldiring">
   <label>Jadval (vergul bilan, Asia/Tashkent)</label><input id="times" placeholder="08:00, 12:00, 18:00">
   <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
     <button id="save">Saqlash</button>
     <button id="post" class="ghost">Hozir post qil</button>
+    <button id="dry" class="ghost">Sinov (post qilmasdan)</button>
   </div>
 </div>
 <div class="card"><div id="last" class="muted">Oxirgi post: —</div><pre id="log" hidden></pre><ul id="hist"></ul></div>
@@ -1338,21 +1391,27 @@ pre{white-space:pre-wrap;background:#0f1219;border:1px solid #2b3243;border-radi
 const $=(s)=>document.querySelector(s);
 async function load(){
  const r=await fetch('/api/news');const d=await r.json();
- $('#enabled').value=d.enabled?'1':'0';$('#channel').value=d.channel||'';$('#model').value=d.model||'';
+ $('#enabled').value=d.enabled?'1':'0';$('#channel').value=d.channel||'';$('#models').value=(d.models||[]).join(', ');
  $('#times').value=(d.times||[]).join(', ');
  $('#apiKey').placeholder=d.hasKey?('kalit bor ('+d.keySource+') - o\'zgartirmasangiz bo\'sh qoldiring'):'kalit yo\'q - kiriting';
  $('#who').textContent=d.bot.username?('@'+d.bot.username):'bot ulanmagan';
  const st=$('#state');st.textContent=d.lastStatus||'tayyor';
  st.className='pill '+(d.lastStatus==='xato'?'err':(d.lastStatus==='yuborildi'?'ok':''));
- $('#last').textContent='Oxirgi post: '+(d.lastPostAt||'—')+(d.lastError?(' · xato: '+d.lastError):'');
+ $('#last').textContent='Oxirgi post: '+(d.lastPostAt||'—')+(d.lastModel?(' · model: '+d.lastModel):'')+(d.lastError?(' · xato: '+d.lastError):'');
  $('#hist').innerHTML=(d.history||[]).map(h=>'<li><b>'+h.at+'</b> · '+h.title+' <span class="muted">('+h.trigger+')</span></li>').join('')||'<li class="muted">Tarix bo\'sh</li>';
 }
 $('#save').onclick=async()=>{
  $('#save').disabled=true;
- const body={enabled:$('#enabled').value==='1',channel:$('#channel').value.trim(),model:$('#model').value.trim(),times:$('#times').value,apiKey:$('#apiKey').value};
+ const body={enabled:$('#enabled').value==='1',channel:$('#channel').value.trim(),models:$('#models').value.trim(),times:$('#times').value,apiKey:$('#apiKey').value};
  const r=await fetch('/api/news',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  const d=await r.json();$('#save').disabled=false;
  if(!d.ok) alert(d.error||'xato'); else { $('#apiKey').value=''; load(); }
+};
+$('#dry').onclick=async()=>{
+ $('#dry').disabled=true;const st=$('#state');st.textContent='sinov…';st.className='pill';
+ const r=await fetch('/api/news/post?dry=1',{method:'POST'});const d=await r.json();
+ $('#dry').disabled=false;load();
+ $('#log').hidden=false;$('#log').textContent=d.ok?('Model: '+d.model+'\n\n'+d.text):('Xato: '+d.error);
 };
 $('#post').onclick=async()=>{
  $('#post').disabled=true;const st=$('#state');st.textContent='yuborilmoqda…';st.className='pill';
@@ -1399,7 +1458,10 @@ var server = http.createServer((req, res) => {
         }
         cfg.enabled = b.enabled === void 0 ? cfg.enabled : !!b.enabled;
         cfg.channel = channel;
-        if (b.model) cfg.model = String(b.model).trim();
+        const rawModels = Array.isArray(b.models) ? b.models.join(",") : String(b.models ?? "");
+        const models = rawModels.split(/[,;\s]+/).map((x) => x.trim().toLowerCase())
+          .filter((x) => /^[a-z0-9][a-z0-9.\-]{2,60}$/.test(x));
+        if (models.length) cfg.models = models;
         if (times.length) cfg.times = times;
         if (b.apiKey) cfg.apiKey = String(b.apiKey).trim();
         cfg.lastError = "";
@@ -1414,7 +1476,8 @@ var server = http.createServer((req, res) => {
       enabled: cfg.enabled,
       channel: cfg.channel,
       times: cfg.times,
-      model: cfg.model,
+      models: cfg.models,
+      lastModel: cfg.lastModel || "",
       hasKey: !!cfg.apiKey,
       keySource: process.env.GEMINI_API_KEY ? "env" : cfg.apiKey ? "panel" : "yo'q",
       lastPostAt: cfg.lastPostAt,
@@ -1426,7 +1489,8 @@ var server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === "/api/news/post" && req.method === "POST") {
-    newsPublish("qo'lda").then((r) => {
+    const dry = url.searchParams.get("dry") === "1";
+    newsPublish(dry ? "sinov" : "qo'lda", dry).then((r) => {
       res.writeHead(r.ok ? 200 : 502, { "content-type": "application/json" });
       res.end(JSON.stringify(r));
     });
