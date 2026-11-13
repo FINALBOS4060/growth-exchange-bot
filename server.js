@@ -70,7 +70,9 @@ function calculateRefundAmount(order) {
     0,
     order.requestedQuantity - order.verifiedQuantity - order.cancelledQuantity
   );
-  const refundCredits = unfulfilledQuantity * order.unitCost;
+  // Bepul birliklar (admin grant / referal bonusi) uchun pul qaytarilmaydi.
+  const paidUnits = Math.max(0, unfulfilledQuantity - Math.min(unfulfilledQuantity, Number(order.freeUnits) || 0));
+  const refundCredits = paidUnits * order.unitCost;
   return {
     refundableUnits: unfulfilledQuantity,
     refundCredits
@@ -330,10 +332,10 @@ function sendWith(bot, chat, text, extra = {}) {
   return tgWith(bot, "sendMessage", { chat_id: chat, text, ...msgExtra(extra) }, 35e3);
 }
 var send = (chat, text, extra = {}) => sendWith(curBot(), chat, text, extra);
-var notify = (u, text) => {
+var notify = (u, text, extra = {}) => {
   if (!u) return Promise.resolve();
   const b = botCtx.getStore() || (u.botId ? botById(u.botId) : null) || primaryBot();
-  return sendWith(b, u.chatId, text, {});
+  return sendWith(b, u.chatId, text, extra);
 };
 async function checkMember(chat, userId) {
   const r = await tg("getChatMember", { chat_id: chat, user_id: userId }, 15e3);
@@ -349,7 +351,7 @@ async function checkMember(chat, userId) {
 var MENU = {
   reply_markup: {
     keyboard: [
-      [{ text: "\u{1F4CB} Vazifalar" }, { text: "\u{1F4E2} Kanallarim" }],
+      [{ text: "\u{1F4E2} Kanallarim" }, { text: "\u{1F4CB} Vazifalar" }],
       [{ text: "\u{1F6D2} Buyurtmalarim" }, { text: "\u{1F4F8} Instagram" }],
       [{ text: "\u{1F465} Referal tizimi" }, { text: "\u{1F4CA} Statistika" }],
       [{ text: "\u{1F6DF} Yordam" }, { text: "\u2699\uFE0F Sozlamalar" }]
@@ -381,7 +383,8 @@ function getUser(from, chatId) {
       status: "active",
       chatId,
       botId: (curBot() || {}).id || "",
-      notifications: true
+      notifications: true,
+      notif: { subscribers: true, referrals: true, orders: true, technical: true }
     };
     if (bonus > 0) {
       addTx(db.users[key], bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi");
@@ -390,6 +393,7 @@ function getUser(from, chatId) {
   }
   const u = db.users[key];
   u.chatId = chatId;
+  if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
   u.botId = (curBot() || {}).id || u.botId || "";
   u.username = from.username;
   u.displayName = [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || u.displayName;
@@ -451,6 +455,7 @@ function checkOrderComplete(o) {
     o.completedAt = nowStr();
     const owner = userById(o.userId);
     owner && (owner.activeOrdersCount = Math.max(0, owner.activeOrdersCount - 1));
+    if (owner && !notifOn(owner, "orders")) return;
     notify(owner, `\u{1F389} <b>Buyurtma yakunlandi!</b>
 
 ${esc(o.destinationTitle)}: ${o.verifiedQuantity} ta obunachi.`);
@@ -469,7 +474,10 @@ function applyVerified(u, t) {
   o.verifiedQuantity++;
   o.pendingQuantity = Math.max(0, o.pendingQuantity - 1);
   const owner = userById(o.userId);
-  if (owner) {
+  // Bepul birliklar (admin grant / referal bonusi) egasidan kredit yechmaydi.
+  if (o.freeUnits > 0) {
+    o.freeUnits -= 1;
+  } else if (owner) {
     owner.credits.reserved = Math.max(0, owner.credits.reserved - o.unitCost);
     owner.credits.spent += o.unitCost;
   }
@@ -503,13 +511,65 @@ function tryQualifyReferral(u) {
   if (!q.isEligible) return;
   const referrer = userById(ref.referrerId);
   if (!referrer) return;
-  ref.bonusIssued = true;
   ref.bonusAmount = q.rewardCredits;
   u.isReferralVerified = true;
-  referrer.credits.available += q.rewardCredits;
-  addTx(referrer, q.rewardCredits, "reward_referral", `Referal: ${u.displayName}`);
-  notify(referrer, `\u{1F465} Do\u2018stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!
-+${q.rewardCredits} kredit hisobingizga qo\u2018shildi.`);
+  // Spec §12: bonus foydalanuvchi tanlagan kanaliga yo'naltiriladi.
+  const chs = channelsOf(referrer);
+  if (!chs.length) {
+    referrer.pendingRefBonus = (referrer.pendingRefBonus || 0) + q.rewardCredits;
+    save();
+    if (notifOn(referrer, "referrals")) notify(referrer, `\u{1F465} Do‘stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!\n\n\u{1F381} <b>${q.rewardCredits} kredit</b> referal bonusi tayyor. Uni kanalingizga yo‘naltirish uchun avval kanal ulang (\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo‘shish\u201D), so‘ng \u201C\u{1F465} Referal tizimi\u201D bo‘limiga kiring.`);
+    return;
+  }
+  referrer.pendingRefBonus = (referrer.pendingRefBonus || 0) + q.rewardCredits;
+  ref.awaitingChoice = true;
+  const buttons = chs.slice(0, 8).map((c) => [{ text: `\u{1F4E2} ${c.title}`.slice(0, 40), callback_data: `refa:${ref.id}|${c.id}` }]);
+  if (notifOn(referrer, "referrals")) notify(referrer, `\u{1F465} Do‘stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!\n\n\u{1F381} <b>${q.rewardCredits} kredit</b> referal bonusi tayyor. Qaysi kanalingizga yo‘naltiramiz?`, { reply_markup: { inline_keyboard: buttons } });
+  save();
+}
+// Referal bonusini tanlangan kanalga obunachi navbati sifatida yo'naltiradi.
+function allocateRefBonus(referrer, ref, ch) {
+  const unit = Math.max(1, Number(S().creditRewardTelegram) || 100);
+  const amount = Number(ref.bonusAmount) || 0;
+  const units = Math.max(1, Math.floor(amount / unit));
+  let o = db.orders.find((x) => x.destinationId === ch.id && x.status === "active");
+  if (o) {
+    o.requestedQuantity += units;
+    o.pendingQuantity += units;
+    o.freeUnits = (o.freeUnits || 0) + units;
+    o.granted = true;
+  } else {
+    o = {
+      id: nid("ord"),
+      seq: ++db.seq,
+      userId: ch.ownerId,
+      userName: ch.ownerName,
+      destinationId: ch.id,
+      destinationTitle: ch.title,
+      platform: "telegram",
+      requestedQuantity: units,
+      verifiedQuantity: 0,
+      pendingQuantity: units,
+      cancelledQuantity: 0,
+      unitCost: 0,
+      totalCost: 0,
+      freeUnits: units,
+      status: "active",
+      granted: true,
+      source: "referral_bonus",
+      createdAt: nowStr()
+    };
+    db.orders.push(o);
+  }
+  ch.totalRequested += units;
+  ch.pendingSubscriptions += units;
+  ref.bonusIssued = true;
+  ref.awaitingChoice = false;
+  ref.allocatedChannelId = ch.id;
+  ref.allocatedUnits = units;
+  referrer.pendingRefBonus = Math.max(0, (referrer.pendingRefBonus || 0) - amount);
+  save();
+  return { units, order: o, amount };
 }
 async function verifyBatch(u, platform, chat) {
   const batch = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
@@ -581,10 +641,17 @@ Qanday bajariladi:
 2. ${platform === "telegram" ? "Obuna bo‘ling" : "Follow qiling"}
 3. Pastdagi <b>“✅ Obuna bo‘ldim”</b> tugmasini bosing — bot o‘zi tekshiradi
 
+Muammo bo‘lsa: kanal yonidagi <b>⚠️N</b> tugmasi orqali shikoyat yuboring.
+
 Har bir obuna uchun: <b>+${reward} kredit</b>
 
 ` + batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") + (platform === "instagram" ? "\n\n⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi." : "");
   const rows = batch.map((t, i) => [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 60), url: t.destinationUrl }]);
+  // Har bir vazifa uchun alohida shikoyat tugmasi (spec §7)
+  if (platform === "telegram") {
+    const cmpBtns = batch.map((t, i) => ({ text: `⚠️${i + 1}`, callback_data: `cmpd:${t.id}` }));
+    for (let i = 0; i < cmpBtns.length; i += 5) rows.push(cmpBtns.slice(i, i + 5));
+  }
   rows.push([{ text: platform === "telegram" ? "✅ Obuna bo‘ldim" : "✅ Bajardim", callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
   rows.push([{ text: "🔄 Yangilash", callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
   return send(chat, text, inline(rows));
@@ -602,8 +669,35 @@ async function showChannels(u, chat) {
 Birinchi marta ulaganingizda <b>+10 kredit</b> sovg‘a olasiz.`) + `
 
 ${balanceLine(u)}`;
-  const rows = chs.map((c) => [{ text: `🛒 ${c.title}`.slice(0, 40), callback_data: `ord:${c.id}` }, ...c.ownerId === u.id ? [{ text: "🔑 Kod", callback_data: `ctl:${c.id}` }] : []]);
+  const rows = chs.map((c) => [
+    { text: `📢 ${c.title}`.slice(0, 32), callback_data: `chd:${c.id}` },
+    { text: "🛒", callback_data: `ord:${c.id}` }
+  ]);
   rows.push([{ text: "➕ Kanal qo‘shish", callback_data: "chadd" }, { text: "🔑 Kod kiritish", callback_data: "ctlin" }]);
+  return send(chat, text, inline(rows));
+}
+// Kanal statistikasi sahifasi (spec §6): obunachi holatlari, buyurtma tarixi,
+// shikoyatlar va nazoratchilar bir joyda.
+async function showChannelDetail(u, ch, chat) {
+  const os = db.orders.filter((o) => o.destinationId === ch.id).slice(-5).reverse();
+  const cmps = db.complaints.filter((c) => c.destinationId === ch.id);
+  const ctl = (ch.controllers || []).map((k) => esc(k.displayName)).join(", ");
+  const text = `📢 <b>${esc(ch.title)}</b>\n@${esc(ch.username)}\n🆔 <code>${esc(ch.channelId)}</code>\n\n` +
+    `So‘ralgan obunachi: ${ch.totalRequested} ta\n` +
+    `✅ Tasdiqlangan: ${ch.verifiedSubscribers} ta\n` +
+    `👥 Faol obunachi: ${ch.activeSubscribers} ta\n` +
+    `➖ Chiqib ketgan: ${ch.unsubscribedCount} ta\n` +
+    `⏳ Kutilmoqda: ${ch.pendingSubscriptions} ta\n\n` +
+    `🔑 Nazoratchilar: ${ctl || "yo‘q"}\n` +
+    `⚠️ Shikoyatlar: ${cmps.length} ta\n\n` +
+    `🛒 <b>Buyurtma tarixi (oxirgi ${os.length} ta):</b>\n` +
+    (os.length ? os.map((o) => `• ${o.requestedQuantity} ta — ${o.verifiedQuantity} bajarildi • ${o.status === "active" ? "🟢 davom etyapti" : o.status === "completed" ? "✅ tugagan" : "⛔ bekor"}`).join("\n") : "• Hali buyurtma yo‘q") +
+    `\n\n${balanceLine(u)}`;
+  const rows = [[{ text: "🛒 Buyurtma berish", callback_data: `ord:${ch.id}` }]];
+  if (ch.ownerId === u.id) {
+    rows.push([{ text: "🔑 Kod berish", callback_data: `ctl:${ch.id}` }, { text: "🗑 Kanalni uzish", callback_data: `chdel:${ch.id}` }]);
+  }
+  rows.push([{ text: "⬅️ Orqaga", callback_data: "chs:0" }]);
   return send(chat, text, inline(rows));
 }
 async function showOrders(u, chat) {
@@ -633,16 +727,26 @@ ${balanceLine(u)}`;
 async function showReferrals(u, chat) {
   const refs = db.referrals.filter((r) => r.referrerId === u.id);
   const paid = refs.filter((r) => r.bonusIssued).length;
-  return send(chat, `👥 <b>Referal tizimi</b>
+  const pendingAmount = Number(u.pendingRefBonus) || 0;
+  const waiting = refs.filter((r) => !r.bonusIssued && r.bonusAmount > 0);
+  const chs = channelsOf(u);
+  const rows = [];
+  if (waiting.length && chs.length) {
+    rows.push([{ text: "🎁 Bonusni kanalga yo‘naltirish", callback_data: `refa:${waiting[0].id}|${chs[0].id}` }]);
+  }
+  const text = `👥 <b>Referal tizimi</b>
 
-Do‘stingizni taklif qiling. U shu botga kirib <b>kamida bitta vazifani</b> bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> beriladi.
+Do‘stingizni taklif qiling. U shu botga kirib <b>kamida bitta vazifani</b> bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> referal bonusi beriladi.
 
-Taklif qilganlar: ${refs.length} ta • Mukofot olganlar: ${paid} ta
+Bonus kanalingizga <b>obunachi</b> sifatida yo‘naltiriladi: 1 obunachi = ${S().creditRewardTelegram} kredit.
 
-🔗 Sizning havolangiz:
+Taklif qilganlar: ${refs.length} ta • Yo‘naltirilgan bonuslar: ${paid} ta` +
+    (pendingAmount > 0 ? `\n\n🎁 Yo‘naltirilmagan bonus: <b>${pendingAmount} kredit</b>${chs.length ? " — quyidagi tugma bilan kanalni tanlang." : " — avval kanal ulang."}` : "") +
+    `\n\n🔗 Sizning havolangiz:
 https://t.me/${S().botUsername}?start=${u.referralCode}
 
-Shu havolani do‘stlaringizga yuboring.`, MENU);
+Shu havolani do‘stlaringizga yuboring.`;
+  return send(chat, text, rows.length ? inline(rows) : MENU);
 }
 async function showStats(u, chat) {
   const c = u.credits;
@@ -699,11 +803,28 @@ Savolingiz yoki muammoingiz bo‘lsa — pastdagi <b>“📝 Shikoyat yuborish�
     [{ text: "📝 Shikoyat yuborish", callback_data: "cmp:new" }]
   ]));
 }
+function notifOn(u, key) {
+  const n = u.notif || {};
+  return n[key] !== false;
+}
 async function showSettings(u, chat) {
+  const mark = (ok) => (ok ? "✅" : "⛔");
   return send(chat, `⚙️ <b>Sozlamalar</b>
 
 Til: 🇺🇿 O‘zbekcha
-Soatlik hisobot: ${u.notifications ? "yoqilgan ✅ (har soatda nechta obunachi kelgani haqida xabar keladi)" : "o‘chirilgan ⛔"}`, inline([[{ text: u.notifications ? "🔕 Hisobotni o‘chirish" : "🔔 Hisobotni yoqish", callback_data: "notif" }]]));
+
+🔔 <b>Bildirishnomalar</b>
+Soatlik hisobot: ${u.notifications ? "✅ yoqilgan" : "⛔ o‘chirilgan"}
+• Yangi obunachilar: ${mark(notifOn(u, "subscribers"))}
+• Referal bonuslar: ${mark(notifOn(u, "referrals"))}
+• Buyurtma holati: ${mark(notifOn(u, "orders"))}
+• Texnik xabarlar: ${mark(notifOn(u, "technical"))}
+
+Kerakli bo‘limni bosing — yoqiladi yoki o‘chadi.`, inline([
+    [{ text: u.notifications ? "🔕 Hisobotni o‘chirish" : "🔔 Hisobotni yoqish", callback_data: "notif" }],
+    [{ text: `Obunachilar ${mark(notifOn(u, "subscribers"))}`, callback_data: "nt:subscribers" }, { text: `Referal ${mark(notifOn(u, "referrals"))}`, callback_data: "nt:referrals" }],
+    [{ text: `Buyurtma ${mark(notifOn(u, "orders"))}`, callback_data: "nt:orders" }, { text: `Texnik ${mark(notifOn(u, "technical"))}`, callback_data: "nt:technical" }]
+  ]));
 }
 var CATEGORIES = [
   "Obunachilar kamayib ketdi",
@@ -727,7 +848,28 @@ async function sponsorGate(u, chat) {
   ]));
   return false;
 }
-async function createOrder(u, destId, qty, chat) {
+// Buyurtma tasdiqlash qadami (spec §11): miqdor kiritilgach xulosa ko'rsatiladi,
+// tasdiqlangandan keyingina kredit band qilinadi.
+async function prepareOrder(u, destId, qty, chat) {
+  const dest = destOf(destId);
+  if (!dest) return send(chat, "Manzil topilmadi.", MENU);
+  const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
+  if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", MENU);
+  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", MENU);
+  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Miqdor 10 dan 10000 gacha butun son bo\u2018lishi kerak. Qayta kiriting:");
+  const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
+  const chk = calculateOrderAffordability(u.credits, qty, unit);
+  if (!chk.canAfford) {
+    u.state = null;
+    return send(chat, `\u274C Kredit yetmayapti.\n\nKerak: ${chk.totalCost} kredit\nSizda: ${u.credits.available} kredit\nYetmayapti: ${chk.shortage} kredit\n\n\u{1F4CB} Vazifalarni bajarib kredit to\u2018plang.`, MENU);
+  }
+  u.state = { type: "order_confirm", destId, qty, platform, unit };
+  const title = platform === "telegram" ? dest.title : "@" + dest.username;
+  return send(chat, `\u{1F4DD} <b>Buyurtma xulosasi</b>\n\n\u2022 ${platform === "telegram" ? "\u{1F4E2}" : "\u{1F4F8}"} ${esc(title)}\n\u2022 Miqdor: <b>${qty}</b> ta ${platform === "telegram" ? "obunachi" : "follower"}\n\u2022 Narx: ${unit} kredit \xD7 ${qty} = <b>${chk.totalCost}</b> kredit\n\u2022 Buyurtmadan keyingi balans: ${u.credits.available - chk.totalCost} kredit\n\nTasdiqlasangiz kredit band qilinadi, obunachilar navbat bilan qo\u2018shiladi.`, inline([
+    [{ text: "\u2705 Tasdiqlash", callback_data: "ordok:1" }, { text: "\u274C Bekor qilish", callback_data: "ordno:0" }]
+  ]));
+}
+async function createOrderConfirmed(u, destId, qty, chat) {
   const dest = destOf(destId);
   if (!dest) return send(chat, "Manzil topilmadi.", MENU);
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
@@ -763,6 +905,7 @@ Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har
     cancelledQuantity: 0,
     unitCost: unit,
     totalCost: chk.totalCost,
+    freeUnits: 0,
     status: "active",
     createdAt: nowStr()
   };
@@ -891,7 +1034,20 @@ async function addInstagram(u, text, chat) {
 }
 async function submitComplaint(u, category, desc, chat) {
   const ticketId = `TICKET-${Math.floor(1e3 + Math.random() * 9e3)}`;
-  db.complaints.push({ id: nid("cmp"), ticketId, userId: u.id, userName: u.displayName, category, description: desc.slice(0, 2e3), status: "NEW", createdAt: nowStr(), updatedAt: nowStr() });
+  const dst = u.state && u.state.type === "complaint" ? u.state : {};
+  db.complaints.push({
+    id: nid("cmp"),
+    ticketId,
+    userId: u.id,
+    userName: u.displayName,
+    category,
+    description: desc.slice(0, 2e3),
+    destinationId: dst.destinationId || null,
+    destinationTitle: dst.destinationTitle || "",
+    status: "NEW",
+    createdAt: nowStr(),
+    updatedAt: nowStr()
+  });
   u.state = null;
   save();
   for (const a of ADMIN_IDS) send(a, `\u{1F6DF} Yangi shikoyat <b>${ticketId}</b>
@@ -1002,7 +1158,7 @@ ${balanceLine(u)}`, MENU);
   if (st && !MENU_LABELS.has(text)) {
     if (st.type === "add_channel") return addChannel(u, text, chat);
     if (st.type === "add_ig") return addInstagram(u, text, chat);
-    if (st.type === "order_qty") return createOrder(u, st.destId, parseInt(text.replace(/\D/g, ""), 10), chat);
+    if (st.type === "order_qty") return prepareOrder(u, st.destId, parseInt(text.replace(/\D/g, ""), 10), chat);
     if (st.type === "ctl_code") return enterControllerCode(u, text, chat);
     if (st.type === "complaint") return submitComplaint(u, st.category, text, chat);
   }
@@ -1070,10 +1226,44 @@ Nechta ${isTg ? "obunachi" : "follower"} kerakligini yozing (10 dan 10000 gacha)
 \u2022 Kredit hozir band qilinadi, obunachilar kelganda sarflanadi
 \nBekor qilish: /cancel`);
     }
+    case "ordok": {
+      const sc = u.state;
+      if (!sc || sc.type !== "order_confirm") return send(chat, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor.", MENU);
+      return createOrderConfirmed(u, sc.destId, sc.qty, chat);
+    }
+    case "ordno":
+      u.state = null;
+      return send(chat, "\u274C Buyurtma bekor qilindi. Kredit band qilinmadi.", MENU);
     case "cx":
       return send(chat, "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi.", inline([[{ text: "Ha, bekor qilish", callback_data: `cxy:${arg}` }, { text: "Yo\u2018q", callback_data: "noop:0" }]]));
     case "cxy":
       return cancelOrder(u, arg, chat);
+    case "chd": {
+      const ch = channelsOf(u).find((c) => c.id === arg);
+      if (!ch) return;
+      return showChannelDetail(u, ch, chat);
+    }
+    case "chs":
+      return showChannels(u, chat);
+    case "chdel": {
+      const ch = db.channels.find((c) => c.id === arg);
+      if (!ch || !(ch.ownerId === u.id || (ch.controllers || []).some((k) => k.userId === u.id))) return;
+      return send(chat, `🗑 <b>${esc(ch.title)}</b> kanalini botdan uzmoqchimisiz?\n\nFaol buyurtmalar bekor qilinadi va bajarilmagan qismining krediti qaytariladi.`, inline([
+        [{ text: "Ha, uzish", callback_data: `chdely:${ch.id}` }, { text: "Yo‘q", callback_data: "noop:0" }]
+      ]));
+    }
+    case "chdely": {
+      const ch = db.channels.find((c) => c.id === arg);
+      if (!ch || !(ch.ownerId === u.id || (ch.controllers || []).some((k) => k.userId === u.id))) return;
+      let refunded = 0;
+      for (const o of db.orders.filter((x) => x.destinationId === ch.id && x.status === "active")) {
+        refunded += cancelOrderAdmin(o).refundCredits || 0;
+      }
+      db.channels = db.channels.filter((x) => x.id !== ch.id);
+      for (const t of db.tasks) if (t.destinationId === ch.id && OPEN.has(t.status)) t.status = "CANCELLED";
+      save();
+      return send(chat, `✅ <b>${esc(ch.title)}</b> uzildi.` + (refunded ? `\n↩️ ${refunded} kredit qaytarildi.` : "") + `\n\n${balanceLine(u)}`, MENU);
+    }
     case "ctl": {
       const ch = db.channels.find((c) => c.id === arg && c.ownerId === u.id);
       if (!ch) return;
@@ -1089,11 +1279,18 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       u.state = { type: "ctl_code" };
       return send(chat, "\u{1F511} 6 xonali kodni yuboring:");
     case "cmp":
+      u.state = { type: "complaint_pick", destinationId: null, destinationTitle: null };
       return send(chat, "Muammo turini tanlang:", inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+    case "cmpd": {
+      const t = db.tasks.find((x) => x.id === arg && x.assignedTo === u.id);
+      u.state = { type: "complaint_pick", destinationId: t ? t.destinationId : null, destinationTitle: t ? t.destinationTitle : null };
+      return send(chat, `⚠️ <b>${esc(t ? t.destinationTitle : "Muammo")}</b>\n\nMuammo turini tanlang:`, inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+    }
     case "cmpc": {
       const c = CATEGORIES[Number(arg)];
       if (!c) return;
-      u.state = { type: "complaint", category: c };
+      const dst = u.state && u.state.type === "complaint_pick" ? u.state : {};
+      u.state = { type: "complaint", category: c, destinationId: dst.destinationId || null, destinationTitle: dst.destinationTitle || null };
       return send(chat, `\u{1F4DD} <b>${esc(c)}</b>
 
 Muammoni batafsil yozing. Bekor qilish: /cancel`);
@@ -1102,6 +1299,22 @@ Muammoni batafsil yozing. Bekor qilish: /cancel`);
       u.notifications = !u.notifications;
       save();
       return showSettings(u, chat);
+    case "refa": {
+      const [rid, cid] = String(arg || "").split("|");
+      const ref = db.referrals.find((r) => r.id === rid && r.referrerId === u.id && !r.bonusIssued);
+      if (!ref) return send(chat, "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi.", MENU);
+      const ch = channelsOf(u).find((c) => c.id === cid);
+      if (!ch) return send(chat, "Kanal topilmadi.", MENU);
+      const r = allocateRefBonus(u, ref, ch);
+      return send(chat, `🎁 Referal bonusi <b>${esc(ch.title)}</b> kanaliga yo‘naltirildi: <b>${r.units}</b> ta obunachi navbatga qo‘shildi.`, MENU);
+    }
+    case "nt": {
+      if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
+      if (!(arg in u.notif)) return;
+      u.notif[arg] = u.notif[arg] === false;
+      save();
+      return showSettings(u, chat);
+    }
   }
 }
 async function handleAdmin(u, text, chat) {
@@ -1249,7 +1462,10 @@ async function hourlyReport() {
   const fmt = (ms) => new Date(ms + 5 * 36e5).toISOString().slice(11, 16);
   for (const [uid, items] of Object.entries(per)) {
     const u = userById(uid);
-    if (!u || !u.notifications) continue;
+    if (!u || !u.notifications || !notifOn(u, "subscribers")) continue;
+    // Idempotentlik: bir soat uchun ikkinchi marta yubormaymiz
+    if (u.lastNotifHour === hour) continue;
+    u.lastNotifHour = hour;
     const tgN = Object.values(items).filter((i) => i.platform === "telegram").reduce((a, i) => a + i.n, 0);
     const igN = Object.values(items).filter((i) => i.platform === "instagram").reduce((a, i) => a + i.n, 0);
     await notify(u, `\u{1F550} <b>Soatlik hisobot (${fmt(from)} \u2013 ${fmt(to)})</b>
@@ -2003,6 +2219,7 @@ var server = http.createServer((req, res) => {
             if (existing) {
               existing.requestedQuantity += qty;
               existing.pendingQuantity += qty;
+              existing.freeUnits = (existing.freeUnits || 0) + qty;
               dest.totalRequested += qty;
               dest.pendingSubscriptions += qty;
               save();
@@ -2022,6 +2239,7 @@ var server = http.createServer((req, res) => {
               cancelledQuantity: 0,
               unitCost: 0,
               totalCost: 0,
+              freeUnits: qty,
               status: "active",
               granted: true,
               createdAt: nowStr()
