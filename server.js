@@ -1252,7 +1252,7 @@ async function hourlyReport() {
     if (!u || !u.notifications) continue;
     const tgN = Object.values(items).filter((i) => i.platform === "telegram").reduce((a, i) => a + i.n, 0);
     const igN = Object.values(items).filter((i) => i.platform === "instagram").reduce((a, i) => a + i.n, 0);
-    await send(u.chatId, `\u{1F550} <b>Soatlik hisobot (${fmt(from)} \u2013 ${fmt(to)})</b>
+    await notify(u, `\u{1F550} <b>Soatlik hisobot (${fmt(from)} \u2013 ${fmt(to)})</b>
 
 \u{1F4E2} Telegram: +${tgN}
 \u{1F4F8} Instagram: +${igN}
@@ -1452,6 +1452,14 @@ async function newsTg(method, params = {}, timeoutMs = 35e3) {
     return { ok: false, description: e.message, network: true };
   }
 }
+function slotToMinutes(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+function uzbNowMinutes() {
+  const t = new Date(Date.now() + 5 * 3600e3);
+  return t.getUTCHours() * 60 + t.getUTCMinutes();
+}
 function uzbNow() {
   const t = new Date(Date.now() + 5 * 3600e3);
   const p = (x) => String(x).padStart(2, "0");
@@ -1610,12 +1618,28 @@ function startNewsScheduler() {
     const c = newsCfg();
     if (!c.enabled) return;
     const t = uzbNow();
-    const slot = `${t.date} ${t.time}`;
-    if (!c.times.includes(t.time) || c.sent.includes(slot)) return;
-    c.sent.push(slot);
+    // 1) Joriy daqiqa jadvalga to‘g‘ri kelsa — post qilamiz.
+    let due = c.times.includes(t.time) && !c.sent.includes(`${t.date} ${t.time}`) ? t.time : null;
+    // 2) Instansiya uxlab qolgan bo‘lsa, oxirgi 20 daqiqa ichidagi o‘tkazib
+    //    yuborilgan slotni qoplaymiz (aks holda o‘sha post butunlay yo‘qoladi).
+    if (!due) {
+      const nowMin = uzbNowMinutes();
+      const missed = c.times
+        .map((s) => ({ s, m: slotToMinutes(s) }))
+        .filter((x) => x.m <= nowMin && nowMin - x.m <= 20)
+        .sort((a, b) => b.m - a.m);
+      for (const m of missed) {
+        if (!c.sent.includes(`${t.date} ${m.s}`)) {
+          due = m.s;
+          break;
+        }
+      }
+    }
+    if (!due) return;
+    c.sent.push(`${t.date} ${due}`);
     c.sent = c.sent.slice(-200);
     save();
-    await newsPublish("jadval");
+    await newsPublish(due === t.time ? "jadval" : `kechikkan ${due}`);
   }, 30e3);
   console.log(`News bot jadvali: ${cfg.times.join(", ")} (${cfg.channel})`);
 }
@@ -1939,10 +1963,16 @@ var server = http.createServer((req, res) => {
         case "channel": {
           const c = db.channels.find((x) => x.id === String(b.id || ""));
           if (!c) throw new Error("Kanal topilmadi");
+          // Avval faol buyurtmalarni bekor qilib, kreditini egasiga qaytaramiz —
+          // aks holda o‘chirilgan kanal uchun kredit “band” bo‘lib qoladi.
+          let refunded = 0;
+          for (const o of db.orders.filter((x) => x.destinationId === c.id && x.status === "active")) {
+            refunded += cancelOrderAdmin(o).refundCredits || 0;
+          }
           db.channels = db.channels.filter((x) => x.id !== c.id);
           for (const t of db.tasks) if (t.destinationId === c.id && OPEN.has(t.status)) t.status = "CANCELLED";
           save();
-          return { deleted: c.title };
+          return { deleted: c.title, refunded };
         }
         case "orders": {
           const all = db.orders.slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)));
@@ -1960,6 +1990,16 @@ var server = http.createServer((req, res) => {
             const dest = db.channels.find((c) => c.id === String(b.destinationId || ""));
             if (!dest) throw new Error("Kanal topilmadi");
             const qty = Math.min(1e4, Math.max(10, Math.round(Number(b.qty) || 50)));
+            // Shu kanalda faol buyurtma bo‘lsa — yangisini yaratmay, uni kengaytiramiz
+            const existing = db.orders.find((x) => x.destinationId === dest.id && x.status === "active");
+            if (existing) {
+              existing.requestedQuantity += qty;
+              existing.pendingQuantity += qty;
+              dest.totalRequested += qty;
+              dest.pendingSubscriptions += qty;
+              save();
+              return { orderId: existing.id, qty, merged: true, total: existing.requestedQuantity };
+            }
             const o = {
               id: nid("ord"),
               seq: ++db.seq,
@@ -2057,7 +2097,8 @@ var server = http.createServer((req, res) => {
           (async () => {
             let ok = 0;
             for (const x of list) {
-              const r = await sendWith(primaryBot(), x.chatId, esc(text), {});
+              const b = (x.botId && botById(x.botId)) || primaryBot();
+              const r = await sendWith(b, x.chatId, esc(text), {});
               if (r.ok) ok++;
               await new Promise((r2) => setTimeout(r2, 50));
             }
@@ -2107,7 +2148,9 @@ async function startBotLoop(bot) {
     botRuns.delete(bot.id);
     bot.lastError = me.description || "getMe xatosi";
     bot.online = false;
-    console.error(`[${botName(bot)}] ishga tushmadi:`, bot.lastError);
+    // Har 30 soniyada urinish logni to‘ldirib yubormasin — 5 daqiqa kutamiz
+    bot.nextRetryAt = Date.now() + 5 * 6e4;
+    console.error(`[${botName(bot)}] ishga tushmadi (5 daqiqadan keyin qayta urinish):`, bot.lastError);
     save();
     return false;
   }
@@ -2223,7 +2266,9 @@ async function main() {
   setInterval(() => maintenance().catch((e) => console.error(e)), 15 * 6e4);
   setInterval(() => {
     for (const b of botsList()) {
-      if (b.enabled && b.token && !botRuns.has(b.id)) startBotLoop(b).catch((e) => console.error(e));
+      if (!b.enabled || !b.token || botRuns.has(b.id)) continue;
+      if (b.nextRetryAt && Date.now() < b.nextRetryAt) continue;
+      startBotLoop(b).catch((e) => console.error(e));
     }
   }, 3e4);
   await startAllBots();
