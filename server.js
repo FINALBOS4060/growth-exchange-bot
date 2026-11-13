@@ -453,7 +453,7 @@ var STR = {
     bonus_line: "\nBirinchi kanal uchun +{bonus} kredit sovg‘a.",
     bal: "💰 Balans: <b>{a}</b> kredit  •  🔒 Band: {r} kredit",
     tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: hozir hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.\n\n{balance}",
-    tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nMuammo bo‘lsa: kanal yonidagi <b>⚠️N</b> tugmasi.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
+    tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nHar bir kanal qatorida: 🔗 havola va <b>⚠️ Shikoyat</b>.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
     tasks_btn_done: "✅ Obuna bo‘ldim",
     tasks_btn_refresh: "🔄 Yangilash",
     tasks_btn_next: "➡️ Keyingi 10 ta",
@@ -531,7 +531,7 @@ var STR = {
     bonus_line: "\nЗа первый канал +{bonus} кредитов.",
     bal: "💰 Баланс: <b>{a}</b> кредитов  •  🔒 Резерв: {r}",
     tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: сейчас никто не заказывал подписчиков. Попробуйте позже.\n\n{balance}",
-    tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nПроблема? Кнопка <b>⚠️N</b> рядом с каналом.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
+    tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nВ строке каждого канала: 🔗 ссылка и <b>⚠️ Жалоба</b>.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
     tasks_btn_done: "✅ Я подписался",
     tasks_btn_refresh: "🔄 Обновить",
     tasks_btn_next: "➡️ Следующие 10",
@@ -609,7 +609,7 @@ var STR = {
     bonus_line: "\n+{bonus} credits for your first channel.",
     bal: "💰 Balance: <b>{a}</b> credits  •  🔒 Reserved: {r}",
     tasks_none: "📋 <b>No tasks yet</b>\n\nReason: nobody has ordered subscribers yet. Try again later.\n\n{balance}",
-    tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nProblem? Use the <b>⚠️N</b> button next to the channel.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
+    tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nEach channel row has 🔗 link and <b>⚠️ Complaint</b>.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
     tasks_btn_done: "✅ I subscribed",
     tasks_btn_refresh: "🔄 Refresh",
     tasks_btn_next: "➡️ Next 10",
@@ -1184,11 +1184,12 @@ async function showTasks(u, platform, chat, next) {
   const text = T(u, "tasks_title", { n: batch.length, reward }) +
     batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") +
     (platform === "instagram" ? "\n\n" + T(u, "ig_note") : "");
-  const rows = batch.map((t, i) => [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 60), url: t.destinationUrl }]);
-  if (platform === "telegram") {
-    const cmpBtns = batch.map((t, i) => ({ text: `⚠️${i + 1}`, callback_data: `cmpd:${t.id}` }));
-    for (let i = 0; i < cmpBtns.length; i += 5) rows.push(cmpBtns.slice(i, i + 5));
-  }
+  // Har bir kanal uchun bitta qator: havola + shikoyat tugmasi yonma-yon.
+  const rows = batch.map((t, i) => {
+    const row = [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 34), url: t.destinationUrl }];
+    if (platform === "telegram") row.push({ text: "⚠️ Shikoyat", callback_data: `cmpd:${t.id}` });
+    return row;
+  });
   rows.push([{ text: T(u, "tasks_btn_done"), callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
   rows.push([{ text: T(u, "tasks_btn_refresh"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }, { text: T(u, "tasks_btn_next"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}:next` }]);
   return send(chat, text, inline(rows));
@@ -1369,14 +1370,24 @@ async function showMyData(u, chat) {
   }), inline([[{ text: T(u, "set_back"), callback_data: "settings" }]]));
 }
 var CATEGORIES = [
-  "Obunachilar kamayib ketdi",
-  "Buyurtmam bajarilmayapti",
-  "Obunachilar noto‘g‘ri hisoblanmoqda",
-  "Kanalimda texnik muammo bor",
-  "Kanalimga ruxsatsiz buyurtma berilgan",
-  "Boshqa muammo",
-  "Shikoyatimni o‘zim yozaman"
+  { key: "subs_down", label: "\u{1F4C9} Obunachilar kamayib ketdi" },
+  { key: "order_stuck", label: "\u{23F3} Buyurtmam bajarilmayapti" },
+  { key: "wrong_count", label: "\u{1F522} Obunachilar noto‘g‘ri hisoblanmoqda" },
+  { key: "tech", label: "\u{1F6E0} Kanalimda texnik muammo bor" },
+  { key: "unauth_order", label: "\u{1F6AB} Kanalimga ruxsatsiz buyurtma berilgan" },
+  { key: "adult", label: "\u{1F51E} 18+ kontent" },
+  { key: "other", label: "\u{1F4AC} Boshqa muammo" },
+  { key: "own_words", label: "\u{270D}\u{FE0F} Shikoyatimni o‘zim yozaman" }
 ];
+function catBtns() {
+  return inline(CATEGORIES.map((c) => [{ text: c.label, callback_data: `cmpc:${c.key}` }]));
+}
+function catLabel(key) {
+  const hit = CATEGORIES.find((c) => c.key === key);
+  if (hit) return hit.label;
+  const n = Number(key);
+  return Number.isInteger(n) && CATEGORIES[n] ? CATEGORIES[n].label : null;
+}
 
 async function sponsorGate(u, chat) {
   const missing = [];
@@ -1796,14 +1807,14 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       return send(chat, TR(u, "\u{1F511} 6 xonali kodni yuboring:"));
     case "cmp":
       u.state = { type: "complaint_pick", destinationId: null, destinationTitle: null };
-      return send(chat, T(u, "cmp_choose"), inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+      return send(chat, T(u, "cmp_choose"), catBtns());
     case "cmpd": {
       const t = db.tasks.find((x) => x.id === arg && x.assignedTo === u.id);
       u.state = { type: "complaint_pick", destinationId: t ? t.destinationId : null, destinationTitle: t ? t.destinationTitle : null };
-      return send(chat, `⚠️ <b>${esc(t ? t.destinationTitle : "—")}</b>\n\n` + T(u, "cmp_choose"), inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+      return send(chat, `⚠️ <b>${esc(t ? t.destinationTitle : "—")}</b>\n\n` + T(u, "cmp_choose"), catBtns());
     }
     case "cmpc": {
-      const c = CATEGORIES[Number(arg)];
+      const c = catLabel(arg);
       if (!c) return;
       const dst = u.state && u.state.type === "complaint_pick" ? u.state : {};
       u.state = { type: "complaint", category: c, destinationId: dst.destinationId || null, destinationTitle: dst.destinationTitle || null };
