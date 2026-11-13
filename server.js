@@ -446,6 +446,7 @@ var STR = {
     tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nMuammo bo‘lsa: kanal yonidagi <b>⚠️N</b> tugmasi.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
     tasks_btn_done: "✅ Obuna bo‘ldim",
     tasks_btn_refresh: "🔄 Yangilash",
+    tasks_btn_next: "➡️ Keyingi 10 ta",
     ch_title: "📢 <b>Kanallaringiz: {n} ta</b>\n\n{list}\n\n{balance}",
     ch_none: "Hali kanal ulanmagan. Ulash uchun:\n1. Botni kanalingizga <b>administrator</b> qiling\n2. “➕ Kanal qo‘shish” tugmasini bosing\n3. Kanal manzilini yuboring (masalan: @kanal_nomi)",
     ch_add: "➕ Kanal qo‘shish",
@@ -523,6 +524,7 @@ var STR = {
     tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nПроблема? Кнопка <b>⚠️N</b> рядом с каналом.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
     tasks_btn_done: "✅ Я подписался",
     tasks_btn_refresh: "🔄 Обновить",
+    tasks_btn_next: "➡️ Следующие 10",
     ch_title: "📢 <b>Ваши каналы: {n}</b>\n\n{list}\n\n{balance}",
     ch_none: "Канал ещё не добавлен:\n1. Сделайте бота <b>администратором</b> канала\n2. Нажмите “➕ Добавить канал”\n3. Отправьте адрес (например: @kanal_nomi)",
     ch_add: "➕ Добавить канал",
@@ -600,6 +602,7 @@ var STR = {
     tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nProblem? Use the <b>⚠️N</b> button next to the channel.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
     tasks_btn_done: "✅ I subscribed",
     tasks_btn_refresh: "🔄 Refresh",
+    tasks_btn_next: "➡️ Next 10",
     ch_title: "📢 <b>Your channels: {n}</b>\n\n{list}\n\n{balance}",
     ch_none: "No channel yet:\n1. Make the bot an <b>administrator</b>\n2. Press “➕ Add channel”\n3. Send the address (e.g. @my_channel)",
     ch_add: "➕ Add channel",
@@ -947,18 +950,17 @@ function addTx(u, amount, type, description, extra = {}) {
 var OPEN = /* @__PURE__ */ new Set(["ACTIVE", "PENDING", "RECHECK", "CHECK_ERROR"]);
 var destOf = (id) => db.channels.find((c) => c.id === id) || db.igProfiles.find((p) => p.id === id);
 var orderAssigned = (o) => db.tasks.filter((t) => t.orderId === o.id && t.status !== "CANCELLED").length;
-function getBatch(u, platform) {
-  const mine = () => db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence);
-  let open = mine();
-  if (open.length < 10) {
-    const orders = db.orders.filter((o) => o.status === "active" && o.platform === platform && o.userId !== u.id).sort((a, b) => a.seq - b.seq);
-    for (const o of orders) {
-      if (open.length >= 10) break;
-      const dest = destOf(o.destinationId);
-      if (!dest) continue;
-      if (platform === "telegram" && (dest.controllers || []).some((c) => c.userId === u.id)) continue;
-      if (db.tasks.some((t2) => t2.assignedTo === u.id && t2.destinationId === o.destinationId && (t2.status !== "CANCELLED" || t2.unsubscribed))) continue;
-      if (orderAssigned(o) >= o.requestedQuantity - o.cancelledQuantity) continue;
+// Berilgan foydalanuvchiga nechta yangi vazifa biriktirish (FIFO: buyurtma seq bo'yicha).
+function assignFresh(u, platform, need) {
+  const added = [];
+  const orders = db.orders.filter((o) => o.status === "active" && o.platform === platform && o.userId !== u.id).sort((a, b) => a.seq - b.seq);
+  for (const o of orders) {
+    if (added.length >= need) break;
+    const dest = destOf(o.destinationId);
+    if (!dest) continue;
+    if (platform === "telegram" && (dest.controllers || []).some((c) => c.userId === u.id)) continue;
+    if (db.tasks.some((t2) => t2.assignedTo === u.id && t2.destinationId === o.destinationId && (t2.status !== "CANCELLED" || t2.unsubscribed))) continue;
+    if (orderAssigned(o) >= o.requestedQuantity - o.cancelledQuantity) continue;
       const t = {
         id: nid("t"),
         platform,
@@ -970,15 +972,27 @@ function getBatch(u, platform) {
         rewardCredits: platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram,
         status: "ACTIVE",
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        queueSequence: ++db.seq,
-        assignedTo: u.id
-      };
-      db.tasks.push(t);
-      open.push(t);
-    }
-    save();
+      queueSequence: ++db.seq,
+      assignedTo: u.id
+    };
+    db.tasks.push(t);
+    added.push(t);
   }
-  return open.slice(0, 10);
+  if (added.length) save();
+  return added;
+}
+function getBatch(u, platform) {
+  const open = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence);
+  if (open.length < 10) assignFresh(u, platform, 10 - open.length);
+  return db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
+}
+// Foydalanuvchi oldingi 10 tani tugatmasa ham keyingi 10 tani ko'rishi mumkin (spec §7).
+function getNextBatch(u, platform) {
+  const before = new Set(db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform).map((t) => t.id));
+  assignFresh(u, platform, 10);
+  const fresh = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status) && !before.has(t.id)).sort((a, b) => a.queueSequence - b.queueSequence);
+  if (fresh.length) return fresh.slice(0, 10);
+  return getBatch(u, platform);
 }
 function checkOrderComplete(o) {
   if (o.status === "active" && o.verifiedQuantity + o.cancelledQuantity >= o.requestedQuantity) {
@@ -1151,10 +1165,10 @@ Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
 function balanceLine(u) {
   return T(u, "bal", { a: u.credits.available, r: u.credits.reserved });
 }
-async function showTasks(u, platform, chat) {
+async function showTasks(u, platform, chat, next) {
   if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
-  const batch = getBatch(u, platform);
+  const batch = next ? getNextBatch(u, platform) : getBatch(u, platform);
   if (!batch.length) return send(chat, T(u, "tasks_none", { balance: balanceLine(u) }), menuFor(u));
   const reward = batch[0].rewardCredits;
   const text = T(u, "tasks_title", { n: batch.length, reward }) +
@@ -1166,7 +1180,7 @@ async function showTasks(u, platform, chat) {
     for (let i = 0; i < cmpBtns.length; i += 5) rows.push(cmpBtns.slice(i, i + 5));
   }
   rows.push([{ text: T(u, "tasks_btn_done"), callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
-  rows.push([{ text: T(u, "tasks_btn_refresh"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
+  rows.push([{ text: T(u, "tasks_btn_refresh"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }, { text: T(u, "tasks_btn_next"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}:next` }]);
   return send(chat, text, inline(rows));
 }
 var channelsOf = (u) => db.channels.filter((c) => c.ownerId === u.id || c.controllers.some((k) => k.userId === u.id));
@@ -1682,7 +1696,8 @@ async function handleCallback(cq) {
   const { user: u } = getUser(from, chat);
   if (u.status === "blocked") return;
   if (S().isBotPaused && !isAdmin(u.telegramId)) return;
-  const [cmd, arg] = String(cq.data || "").split(":");
+  const [cmd, ...argParts] = String(cq.data || "").split(":");
+  const arg = argParts.join(":");
   const key = `${cmd}:${arg}`;
   if (key === "sp:check") {
     if (await sponsorGate(u, chat)) return send(chat, TR(u, "\u2705 Rahmat! Endi botdan foydalanishingiz mumkin."), menuFor(u));
@@ -1690,8 +1705,10 @@ async function handleCallback(cq) {
   }
   if (!await sponsorGate(u, chat)) return;
   switch (cmd) {
-    case "tasks":
-      return showTasks(u, arg === "ig" ? "instagram" : "telegram", chat);
+    case "tasks": {
+      const [plat, mode] = String(arg || "").split(":");
+      return showTasks(u, plat === "ig" ? "instagram" : "telegram", chat, mode === "next");
+    }
     case "verify":
       return verifyBatch(u, arg === "ig" ? "instagram" : "telegram", chat);
     case "chadd":
