@@ -139,7 +139,7 @@ var defaultSettings = () => ({
   hourlyNotificationsEnabled: true,
   telegramBotToken: "",
   botUsername: "",
-  botDisplayName: "Growth Exchange Bot",
+  botDisplayName: "Obuna 2X bot",
   botId: "",
   webhookUrl: "",
   webhookStatus: "polling",
@@ -1329,7 +1329,8 @@ function cancelOrderAdmin(o) {
   return { refundCredits, refundableUnits };
 }
 // --- News bot: Gemini bilan yangilik yaratib, kanalga post qiladi ---
-var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "8716237015:AAFaPMNGc-AXJRfoDirESjkaZRalL9gs0zM").trim();
+// Token faqat env'dan (repo'ga yozilmaydi)
+var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "").trim();
 var newsBotInfo = { username: "", id: "" };
 // Model cooldown: 429/404/503 bo'lgan modellar vaqtincha o'tkazib yuboriladi,
 // shunda world-news-bot bitta modelning limitiga bog'liq bo'lib qolmaydi.
@@ -1579,7 +1580,7 @@ pre{white-space:pre-wrap;background:#0f1219;border:1px solid #2b3243;border-radi
   <label>Holat</label>
   <select id="enabled"><option value="1">Yoqilgan</option><option value="0">To'xtatilgan</option></select>
   <div class="row">
-    <div><label>Kanal (@yoki -100…)</label><input id="channel" placeholder="@WORLD_NEWS_1M"></div>
+    <div><label>Kanal (@yoki -100…)</label><input id="channel" placeholder="@Dunyo_Yangiliklari_Texno"></div>
     <div><label>Modellar (tartib bo'yicha)</label><input id="models" placeholder="gemini-3.1-flash-lite, gemini-3.5-flash-lite"></div>
   </div>
   <label>Gemini API kaliti</label><input id="apiKey" type="password" placeholder="o'zgarmasin desangiz bo'sh qoldiring">
