@@ -1484,12 +1484,20 @@ async function newsPublish(trigger, dry) {
       save();
       return { ok: true, dry: true, text: body, model: cfg.lastModel };
     }
+    const html = newsToHtml(body);
     let sent;
     if (image) {
-      sent = await newsTg("sendPhoto", { chat_id: cfg.channel, photo: image, caption: body.slice(0, 1024) });
-      if (!sent.ok) sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: body.slice(0, 4096) });
+      sent = await newsTg("sendPhoto", { chat_id: cfg.channel, photo: image, caption: html.slice(0, 1024), parse_mode: "HTML" });
+      if (!sent.ok) sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: html.slice(0, 4096), parse_mode: "HTML" });
     } else {
-      sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: body.slice(0, 4096) });
+      sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: html.slice(0, 4096), parse_mode: "HTML" });
+    }
+    // HTML rad etilsa — formatlashsiz qayta yuborish (post baribir chiqsin)
+    if (!sent.ok && /can't parse entities|unsupported start tag|Unclosed/i.test(sent.description || "")) {
+      const plain = newsStripTags(html);
+      sent = image
+        ? await newsTg("sendPhoto", { chat_id: cfg.channel, photo: image, caption: plain.slice(0, 1024) })
+        : await newsTg("sendMessage", { chat_id: cfg.channel, text: plain.slice(0, 4096) });
     }
     if (!sent.ok) throw new Error(sent.description || "Telegram xatosi");
     const stamp = uzbNow();
@@ -1508,6 +1516,19 @@ async function newsPublish(trigger, dry) {
     console.error("News bot xatosi:", e.message);
     return { ok: false, error: e.message };
   }
+}
+// Gemini matnidagi **qalin** belgilarini Telegram HTML'iga aylantiradi.
+// Avval HTML belgilari qochiriladi, keyin qalinlashtirish qo'llanadi — shunda
+// matndagi < & > belgilari parse xatosiga sabab bo'lmaydi.
+function newsToHtml(text) {
+  const safe = String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return safe.replace(/\*\*([^*\n]{1,200})\*\*/g, "<b>$1</b>");
+}
+function newsStripTags(html) {
+  return String(html || "").replace(/<\/?b>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 function startNewsScheduler() {
   const cfg = newsCfg();
