@@ -184,6 +184,8 @@ var db = {
   appeals: [],
   settings: defaultSettings(),
   lastExportAt: 0,
+  lastBackupAt: 0,
+  moderationFlags: [],
   lastHour: 0
 };
 function applyLoadedState(loaded) {
@@ -222,6 +224,62 @@ function persist() {
     console.error("Postgres saqlash xatosi:", e.message);
   });
   return dbChain;
+}
+// --- Kunlik zaxira nusxa (spec §18, §19) ---
+async function backupNow(reason) {
+  try {
+    const payload = JSON.stringify(db);
+    const stamp = new Date(Date.now() + 5 * 36e5).toISOString().replace(/[:.]/g, "-").slice(0, 16);
+    if (dbPool) {
+      await dbPool.query("CREATE TABLE IF NOT EXISTS app_backup (id bigserial PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now(), reason text, size integer, data jsonb NOT NULL)");
+      await dbPool.query("INSERT INTO app_backup (reason, size, data) VALUES ($1, $2, $3::jsonb)", [String(reason || "kunlik"), payload.length, payload]);
+      await dbPool.query("DELETE FROM app_backup WHERE created_at < now() - interval '14 days'");
+      console.log("Zaxira nusxa olindi (postgres, " + Math.round(payload.length / 1024) + " KB)");
+    } else {
+      const dir = path.join(path.dirname(DATA_FILE), "backups");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "state-" + stamp + ".json"), payload);
+      const files = fs.readdirSync(dir).filter((f) => f.startsWith("state-")).sort();
+      for (const f of files.slice(0, Math.max(0, files.length - 7))) fs.unlinkSync(path.join(dir, f));
+      console.log("Zaxira nusxa olindi (fayl, " + Math.round(payload.length / 1024) + " KB)");
+    }
+    db.lastBackupAt = Date.now();
+    save();
+    return true;
+  } catch (e) {
+    console.error("Zaxira nusxa xatosi:", e.message);
+    return false;
+  }
+}
+async function listBackups() {
+  if (!dbPool) {
+    const dir = path.join(path.dirname(DATA_FILE), "backups");
+    try {
+      return fs.readdirSync(dir).filter((f) => f.startsWith("state-")).sort().reverse().slice(0, 20).map((f) => {
+        const st = fs.statSync(path.join(dir, f));
+        return { at: st.mtime.toISOString(), sizeKb: Math.round(st.size / 1024), name: f };
+      });
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const r = await dbPool.query("SELECT created_at, size, reason FROM app_backup ORDER BY created_at DESC LIMIT 20");
+    return r.rows.map((x) => ({ at: x.created_at, sizeKb: Math.round((x.size || 0) / 1024), reason: x.reason }));
+  } catch {
+    return [];
+  }
+}
+// Har soatda bir marta: kunlik zaxira nusxa (o'sha kuni olinmagan bo'lsa).
+function startBackupJob() {
+  const run = async () => {
+    const t = uzbNow();
+    const dayStart = Date.parse(t.date + "T00:00:00Z");
+    if (db.lastBackupAt && db.lastBackupAt >= dayStart) return;
+    await backupNow("kunlik");
+  };
+  setInterval(run, 36e5);
+  setTimeout(run, 6e4);
 }
 async function openStore() {
   if (!DATABASE_URL) {
@@ -364,6 +422,13 @@ var STR = {
     b_stats: "📊 Statistika",
     b_help: "🛟 Yordam",
     b_settings: "⚙️ Sozlamalar",
+    ig_add: "➕ Profil qo‘shish",
+    ig_tasks: "📋 Instagram vazifalar",
+    verify_btn: "✅ Tekshirish",
+    cancel_yes: "Ha, bekor qilish",
+    cancel_no: "Yo‘q",
+    disc_yes: "Ha, uzish",
+    disc_no: "Yo‘q",
     start_new: "Assalomu alaykum, {name}! 👋\n\nBotga xush kelibsiz! Quyida qisqa yo‘riqnoma.",
     start_back: "Assalomu alaykum, {name}! 🚀\n\nBu Telegram va Instagram o‘zaro o‘sish platformasi.\nBoshqa kanallarga obuna bo‘lib kredit ishlang va o‘z kanalingizga obunachi buyurtma qiling.\n\n{balance}",
     guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {per} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{per} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
@@ -413,6 +478,13 @@ var STR = {
     b_stats: "📊 Статистика",
     b_help: "🛟 Помощь",
     b_settings: "⚙️ Настройки",
+    ig_add: "➕ Добавить профиль",
+    ig_tasks: "📋 Задания Instagram",
+    verify_btn: "✅ Проверить",
+    cancel_yes: "Да, отменить",
+    cancel_no: "Нет",
+    disc_yes: "Да, отключить",
+    disc_no: "Нет",
     start_new: "Здравствуйте, {name}! 👋\n\nДобро пожаловать! Ниже короткая инструкция.",
     start_back: "Здравствуйте, {name}! 🚀\n\nЭто платформа взаимного роста в Telegram и Instagram.\nПодписывайтесь на другие каналы, зарабатывайте кредиты и заказывайте подписчиков себе.\n\n{balance}",
     guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {per} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
@@ -462,6 +534,13 @@ var STR = {
     b_stats: "📊 Statistics",
     b_help: "🛟 Help",
     b_settings: "⚙️ Settings",
+    ig_add: "➕ Add profile",
+    ig_tasks: "📋 Instagram tasks",
+    verify_btn: "✅ Check",
+    cancel_yes: "Yes, cancel",
+    cancel_no: "No",
+    disc_yes: "Yes, disconnect",
+    disc_no: "No",
     start_new: "Hello, {name}! 👋\n\nWelcome! Here is a short guide.",
     start_back: "Hello, {name}! 🚀\n\nThis is a Telegram and Instagram growth exchange.\nSubscribe to other channels to earn credits, then order subscribers for your own.\n\n{balance}",
     guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {per} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
@@ -575,6 +654,164 @@ Object.assign(STR.en, {
   "ord_fifo_short": "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)"
 });
 
+var TRMAP = {
+ "Bu kanal allaqachon ulangan — qayta ulash shart emas.": {
+  "ru": "Канал уже добавлен — повторно не нужно.",
+  "en": "This channel is already added — no need to re-add."
+ },
+ "❌ Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, “🔑 Kod kiritish” orqali nazoratchi bo‘lasiz.": {
+  "ru": "❌ Канал добавлен другим пользователем.\n\nЕсли владелец даст вам одноразовый код, вы станете контроллером через “🔑 Ввести код”.",
+  "en": "❌ This channel is registered by another user.\n\nIf the owner gives you a one-time code, you can become a controller via “🔑 Enter code”."
+ }
+,
+ "Manzil noto‘g‘ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel": {
+  "ru": "Неверный адрес. Отправьте адрес канала, например: <code>@moy_kanal</code>\n\nОтмена: /cancel",
+  "en": "Invalid address. Send your channel address, e.g. <code>@my_channel</code>\n\nCancel: /cancel"
+ },
+ "❌ Bu manzilda kanal topilmadi.\n\nKanal <b>ommaviy (public)</b> bo‘lishi va manzili @ bilan yozilishi kerak.": {
+  "ru": "❌ Канал не найден.\n\nКанал должен быть <b>публичным</b>, адрес — с @.",
+  "en": "❌ Channel not found.\n\nThe channel must be <b>public</b> and the address must start with @."
+ },
+ "❌ Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari → Administratorlar → botni qo‘shib, qayta yuboring.": {
+  "ru": "❌ Бот не <b>администратор</b> канала.\n\nНастройки канала → Администраторы → добавьте бота и отправьте снова.",
+  "en": "❌ The bot is not an <b>administrator</b>.\n\nChannel settings → Administrators → add the bot and send again."
+ },
+ "❌ Siz bu kanalning administratori emassiz.\n\nFaqat o‘zingiz boshqaradigan kanalni ulash mumkin.": {
+  "ru": "❌ Вы не администратор этого канала.\n\nМожно добавить только свой канал.",
+  "en": "❌ You are not an administrator of this channel.\n\nYou can add only a channel you manage."
+ },
+ "Bu kanal allaqachon ulangan.": {
+  "ru": "Этот канал уже добавлен.",
+  "en": "This channel is already added."
+ },
+ "❌ Bu kanal boshqa foydalanuvchi nomida ulangan. Nazoratchi kodi orqali qo‘shiling.": {
+  "ru": "❌ Канал добавлен другим пользователем. Используйте код контроллера.",
+  "en": "❌ This channel is registered by another user. Join via controller code."
+ },
+ "📢 Botdan foydalanish uchun quyidagi homiy kanallarga obuna bo‘ling:": {
+  "ru": "📢 Для использования бота подпишитесь на каналы спонсоров:",
+  "en": "📢 Subscribe to the sponsor channels to use the bot:"
+ },
+ "✅ Rahmat! Endi botdan foydalanishingiz mumkin.": {
+  "ru": "✅ Спасибо! Теперь можно пользоваться ботом.",
+  "en": "✅ Thanks! You can use the bot now."
+ },
+ "⏸ Bot vaqtincha to‘xtatilgan. Keyinroq urinib ko‘ring.": {
+  "ru": "⏸ Бот временно остановлен. Попробуйте позже.",
+  "en": "⏸ The bot is temporarily paused. Try later."
+ },
+ "Buyurtma ma’lumoti eskirgan. Qaytadan boshlang: Kanallarim → kanal → miqdor.": {
+  "ru": "Данные заказа устарели. Начните заново: Мои каналы → канал → количество.",
+  "en": "Order data expired. Start again: My channels → channel → quantity."
+ },
+ "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi.": {
+  "ru": "Отменить заказ? Кредиты за невыполненную часть вернутся.",
+  "en": "Cancel this order? Credits for the unfulfilled part will be refunded."
+ },
+ "Ha, bekor qilish": {
+  "ru": "Да, отменить",
+  "en": "Yes, cancel"
+ },
+ "Yo‘q": {
+  "ru": "Нет",
+  "en": "No"
+ },
+ "❄️": {
+  "ru": "❄️",
+  "en": "❄️"
+ },
+ "📸 Instagram username yoki havolasini yuboring. Bekor qilish: /cancel": {
+  "ru": "📸 Отправьте Instagram username или ссылку. Отмена: /cancel",
+  "en": "📸 Send an Instagram username or link. Cancel: /cancel"
+ },
+ "Instagram username yoki havolasini yuboring. Masalan: <code>@my_brand</code>": {
+  "ru": "Отправьте Instagram username или ссылку. Например: <code>@my_brand</code>",
+  "en": "Send an Instagram username or link, e.g. <code>@my_brand</code>"
+ },
+ "Bu profil allaqachon ulangan.": {
+  "ru": "Этот профиль уже добавлен.",
+  "en": "This profile is already added."
+ },
+ "🔑 6 xonali kodni yuboring:": {
+  "ru": "🔑 Отправьте 6-значный код:",
+  "en": "🔑 Send the 6-digit code:"
+ },
+ "Kanal topilmadi.": {
+  "ru": "Канал не найден.",
+  "en": "Channel not found."
+ },
+ "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi.": {
+  "ru": "Бонус уже направлен или не найден.",
+  "en": "The bonus was already allocated or not found."
+ },
+ "Buyurtma topilmadi yoki allaqachon yopilgan.": {
+  "ru": "Заказ не найден или уже закрыт.",
+  "en": "Order not found or already closed."
+ },
+ "Son 10 dan 10 000 gacha bo‘lishi kerak. Qaytadan yozing:": {
+  "ru": "Число должно быть от 10 до 10 000. Введите снова:",
+  "en": "The number must be between 10 and 10,000. Enter again:"
+ },
+ "📨 Apellyatsiyangiz allaqachon ko‘rib chiqilmoqda.": {
+  "ru": "📨 Ваша апелляция уже рассматривается.",
+  "en": "📨 Your appeal is already under review."
+ },
+ "📨 Apellyatsiya qabul qilindi. Admin ko‘rib chiqadi va javob yuboradi.": {
+  "ru": "📨 Апелляция принята. Администратор рассмотрит и ответит.",
+  "en": "📨 Appeal received. An administrator will review and reply."
+ },
+ "⛔ Hisobingiz bloklangan.\n\nApellyatsiya yuborish: /appeal <sabab/matn>": {
+  "ru": "⛔ Ваш аккаунт заблокирован.\n\nАпелляция: /appeal <текст>",
+  "en": "⛔ Your account is blocked.\n\nAppeal: /appeal <text>"
+ },
+ "📸 Instagram bo‘limi hozircha o‘chirilgan.": {
+  "ru": "📸 Раздел Instagram пока отключён.",
+  "en": "📸 The Instagram section is currently disabled."
+ },
+ "🧊 Buyurtmalar vaqtincha muzlatilgan.": {
+  "ru": "🧊 Заказы временно заморожены.",
+  "en": "🧊 Orders are temporarily frozen."
+ },
+ "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {short} kredit\n\nKredit ishlash uchun “📋 Vazifalar” tugmasini bosing — har bir obuna uchun {reward} kredit beriladi.": {
+  "ru": "❌ <b>Недостаточно кредитов</b>\n\nНужно: {need} кредитов\nУ вас: {have} кредитов\nНе хватает: {short} кредитов\n\nЧтобы заработать кредиты, нажмите «📋 Задания» — за каждую подписку начисляется {reward} кредитов.",
+  "en": "❌ <b>Not enough credits</b>\n\nNeeded: {need} credits\nYou have: {have} credits\nShort by: {short} credits\n\nTo earn credits tap “📋 Tasks” — you get {reward} credits per subscription."
+ },
+ "↩️ <b>Buyurtma bekor qilindi</b>\n\nKelgan obunachilar saqlanadi ({verified} ta), bajarilmagan {unfulfilled} ta uchun <b>{refund} kredit</b> qaytarildi.\n{balance}": {
+  "ru": "↩️ <b>Заказ отменён</b>\n\nПришедшие подписчики сохранены ({verified}), за невыполненные {unfulfilled} возвращено <b>{refund} кредитов</b>.\n{balance}",
+  "en": "↩️ <b>Order cancelled</b>\n\nDelivered subscribers are kept ({verified}); <b>{refund} credits</b> refunded for the {unfulfilled} unfulfilled ones.\n{balance}"
+ },
+ "✅ Kod tasdiqlandi! Siz <b>{title}</b> kanalida nazoratchisiz.": {
+  "ru": "✅ Код подтверждён! Вы контролёр канала <b>{title}</b>.",
+  "en": "✅ Code confirmed! You are a controller of <b>{title}</b>."
+ },
+ "🗑 <b>{title}</b> kanalini botdan uzmoqchimisiz?\n\nFaol buyurtmalar bekor qilinadi va bajarilmagan qismining krediti qaytariladi.": {
+  "ru": "🗑 Отключить канал <b>{title}</b> от бота?\n\nАктивные заказы будут отменены, кредиты за невыполненную часть вернутся.",
+  "en": "🗑 Disconnect <b>{title}</b> from the bot?\n\nActive orders will be cancelled and credits for the unfulfilled part refunded."
+ },
+ "✅ <b>{title}</b> uzildi.": {
+  "ru": "✅ <b>{title}</b> отключён.",
+  "en": "✅ <b>{title}</b> disconnected."
+ },
+ "\n↩️ {refund} kredit qaytarildi.": {
+  "ru": "\n↩️ Возвращено {refund} кредитов.",
+  "en": "\n↩️ {refund} credits refunded."
+ },
+ "🎁 Referal bonusi <b>{title}</b> kanaliga yo‘naltirildi: <b>{units}</b> ta obunachi navbatga qo‘shildi.": {
+  "ru": "🎁 Реферальный бонус направлен на канал <b>{title}</b>: в очередь добавлено <b>{units}</b> подписчиков.",
+  "en": "🎁 Referral bonus sent to <b>{title}</b>: <b>{units}</b> subscribers added to the queue."
+ }
+};
+function TR(u, uzText) {
+  const l = langOf(u);
+  if (l === "uz") return uzText;
+  const m = TRMAP[uzText];
+  return (m && m[l]) || uzText;
+}
+function TRV(u, uzText, vars) {
+  let out = TR(u, uzText);
+  for (const k of Object.keys(vars || {})) out = out.split("{" + k + "}").join(String(vars[k]));
+  return out;
+}
 var MENU = menuFor({ language: "uz" });
 var MENU_LABELS = new Set(Object.keys(LABEL2KEY));
 
@@ -908,7 +1145,7 @@ async function showOrders(u, chat) {
   return send(chat, T(u, "ord_title", { n: all.length, balance: balanceLine(u), list }), rows.length ? inline(rows) : menuFor(u));
 }
 async function showInstagram(u, chat) {
-  if (!S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", menuFor(u));
+  if (!S().isInstagramEnabled) return send(chat, TR(u, "📸 Instagram bo‘limi hozircha o‘chirilgan."), menuFor(u));
   const ps = db.igProfiles.filter((p) => p.userId === u.id);
   const text = `📸 <b>Instagram</b>
 
@@ -918,7 +1155,7 @@ Kredit Telegram bilan bitta, lekin vazifalar alohida.
 
 ${balanceLine(u)}`;
   const rows = ps.map((p) => [{ text: `🛒 @${p.username}`, callback_data: `ord:${p.id}` }]);
-  rows.push([{ text: "➕ Profil qo‘shish", callback_data: "igadd" }, { text: "📋 Instagram vazifalar", callback_data: "tasks:ig" }]);
+  rows.push([{ text: T(u, "ig_add"), callback_data: "igadd" }, { text: T(u, "ig_tasks"), callback_data: "tasks:ig" }]);
   return send(chat, text, inline(rows));
 }
 async function showReferrals(u, chat) {
@@ -994,9 +1231,9 @@ async function sponsorGate(u, chat) {
     if (await checkMember(sp.channelId, u.telegramId) === "not_member") missing.push(sp);
   }
   if (!missing.length) return true;
-  await send(chat, "\u{1F4E2} Botdan foydalanish uchun quyidagi homiy kanallarga obuna bo\u2018ling:", inline([
+  await send(chat, TR(u, "\u{1F4E2} Botdan foydalanish uchun quyidagi homiy kanallarga obuna bo\u2018ling:"), inline([
     ...missing.map((s) => [{ text: `\u{1F4E2} ${s.title}`, url: s.url }]),
-    [{ text: "\u2705 Tekshirish", callback_data: "sp:check" }]
+    [{ text: T(u, "verify_btn"), callback_data: "sp:check" }]
   ]));
   return false;
 }
@@ -1031,20 +1268,14 @@ async function createOrderConfirmed(u, destId, qty, chat) {
   const dest = destOf(destId);
   if (!dest) return send(chat, "Manzil topilmadi.", menuFor(u));
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
-  if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", menuFor(u));
+  if (S().areOrdersFrozen) return send(chat, TR(u, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan."), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", menuFor(u));
-  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:");
+  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, TR(u, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:"));
   const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
-    return send(chat, `\u274C <b>Kredit yetmayapti</b>
-
-Kerak: ${chk.totalCost} kredit
-Sizda: ${u.credits.available} kredit
-Yetmayapti: ${chk.shortage} kredit
-
-Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har bir obuna uchun ${S().creditRewardTelegram} kredit beriladi.`, menuFor(u));
+    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {short} kredit\n\nKredit ishlash uchun “📋 Vazifalar” tugmasini bosing — har bir obuna uchun {reward} kredit beriladi.", { need: chk.totalCost, have: u.credits.available, short: chk.shortage, reward: S().creditRewardTelegram }), menuFor(u));
   }
   u.credits.available -= chk.totalCost;
   u.credits.reserved += chk.totalCost;
@@ -1069,6 +1300,7 @@ Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har
   };
   db.orders.push(o);
   platform === "telegram" ? (dest.totalRequested += qty, dest.pendingSubscriptions += qty) : (dest.totalRequested += qty, dest.pendingFollowers += qty);
+  moderationScan("order", { userId: u.id, userName: u.displayName, channelId: o.destinationId, title: o.destinationTitle, qty });
   addTx(u, -chk.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id });
   u.state = null;
   save();
@@ -1076,7 +1308,7 @@ Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har
 }
 async function cancelOrder(u, orderId, chat) {
   const o = db.orders.find((x) => x.id === orderId && x.userId === u.id);
-  if (!o || o.status !== "active") return send(chat, "Buyurtma topilmadi yoki allaqachon yopilgan.", menuFor(u));
+  if (!o || o.status !== "active") return send(chat, TR(u, "Buyurtma topilmadi yoki allaqachon yopilgan."), menuFor(u));
   const { refundableUnits, refundCredits } = calculateRefundAmount(o);
   o.cancelledQuantity += refundableUnits;
   o.pendingQuantity = 0;
@@ -1094,25 +1326,22 @@ async function cancelOrder(u, orderId, chat) {
   }
   addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id });
   save();
-  return send(chat, `\u21A9\uFE0F <b>Buyurtma bekor qilindi</b>
-
-Kelgan obunachilar saqlanadi (${o.verifiedQuantity} ta), bajarilmagan ${refundableUnits} ta uchun <b>${refundCredits} kredit</b> qaytarildi.
-${balanceLine(u)}`, menuFor(u));
+  return send(chat, TRV(u, "↩️ <b>Buyurtma bekor qilindi</b>\n\nKelgan obunachilar saqlanadi ({verified} ta), bajarilmagan {unfulfilled} ta uchun <b>{refund} kredit</b> qaytarildi.\n{balance}", { verified: o.verifiedQuantity, unfulfilled: refundableUnits, refund: refundCredits, balance: balanceLine(u) }), menuFor(u));
 }
 async function addChannel(u, text, chat) {
   const uname = text.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
-  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return send(chat, "Manzil noto\u2018g\u2018ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel");
+  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return send(chat, TR(u, "Manzil noto\u2018g\u2018ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel"));
   const info = await tg("getChat", { chat_id: `@${uname}` });
-  if (!info.ok || info.result.type !== "channel") return send(chat, "\u274C Bu manzilda kanal topilmadi.\n\nKanal <b>ommaviy (public)</b> bo\u2018lishi va manzili @ bilan yozilishi kerak.");
+  if (!info.ok || info.result.type !== "channel") return send(chat, TR(u, "\u274C Bu manzilda kanal topilmadi.\n\nKanal <b>ommaviy (public)</b> bo\u2018lishi va manzili @ bilan yozilishi kerak."));
   const ch = info.result;
   const botMe = await checkBotAdmin(ch.id);
-  if (!botMe) return send(chat, "\u274C Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari \u2192 Administratorlar \u2192 botni qo\u2018shib, qayta yuboring.");
+  if (!botMe) return send(chat, TR(u, "\u274C Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari \u2192 Administratorlar \u2192 botni qo\u2018shib, qayta yuboring."));
   const me = await tg("getChatMember", { chat_id: ch.id, user_id: u.telegramId });
-  if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, "\u274C Siz bu kanalning administratori emassiz.\n\nFaqat o\u2018zingiz boshqaradigan kanalni ulash mumkin.");
+  if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, TR(u, "\u274C Siz bu kanalning administratori emassiz.\n\nFaqat o\u2018zingiz boshqaradigan kanalni ulash mumkin."));
   const existing = db.channels.find((c) => c.channelId === String(ch.id));
   if (existing) {
     u.state = null;
-    return send(chat, existing.ownerId === u.id ? "Bu kanal allaqachon ulangan \u2014 qayta ulash shart emas." : "\u274C Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, \u201C\u{1F511} Kod kiritish\u201D orqali nazoratchi bo\u2018lasiz.", menuFor(u));
+    return send(chat, existing.ownerId === u.id ? TR(u, "Bu kanal allaqachon ulangan — qayta ulash shart emas.") : TR(u, "❌ Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, “🔑 Kod kiritish” orqali nazoratchi bo‘lasiz."), menuFor(u));
   }
   db.channels.push({
     id: nid("ch"),
@@ -1140,6 +1369,7 @@ async function addChannel(u, text, chat) {
   }
   u.state = null;
   save();
+  moderationScan("channel", { userId: u.id, userName: u.displayName, channelId: String(ch.id), title: ch.title, username: ch.username || uname });
   const head = T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) });
   const tail = linkBonus > 0 ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "";
   return send(chat, head + tail, menuFor(u));
@@ -1154,11 +1384,11 @@ async function checkBotAdmin(chatId) {
 }
 async function addInstagram(u, text, chat) {
   const m = text.trim().match(/^(?:https?:\/\/)?(?:www\.)?instagram\.com\/([A-Za-z0-9._]+)/i) || text.trim().match(/^@?([A-Za-z0-9._]{2,30})$/);
-  if (!m) return send(chat, "Instagram username yoki havolasini yuboring. Masalan: <code>@my_brand</code>");
+  if (!m) return send(chat, TR(u, "Instagram username yoki havolasini yuboring. Masalan: <code>@my_brand</code>"));
   const username = m[1];
   if (db.igProfiles.some((p) => p.username.toLowerCase() === username.toLowerCase())) {
     u.state = null;
-    return send(chat, "Bu profil allaqachon ulangan.", menuFor(u));
+    return send(chat, TR(u, "Bu profil allaqachon ulangan."), menuFor(u));
   }
   db.igProfiles.push({
     id: nid("ig"),
@@ -1193,6 +1423,7 @@ async function submitComplaint(u, category, desc, chat) {
     createdAt: nowStr(),
     updatedAt: nowStr()
   });
+  moderationScan("complaint", { userId: u.id, userName: u.displayName, channelId: dst.destinationId || "", title: dst.destinationTitle || "" });
   u.state = null;
   save();
   for (const a of ADMIN_IDS) send(a, `\u{1F6DF} Yangi shikoyat <b>${ticketId}</b>
@@ -1217,7 +1448,7 @@ async function enterControllerCode(u, code, chat) {
       ch.controllers.push({ userId: u.id, displayName: u.displayName, telegramId: u.telegramId, role: "controller", addedAt: nowStr() });
       save();
       notify(userById(ch.ownerId), `\u{1F511} ${esc(u.displayName)} <b>${esc(ch.title)}</b> kanaliga nazoratchi sifatida qo\u2018shildi.`);
-      return send(chat, `\u2705 Kod tasdiqlandi! Siz <b>${esc(ch.title)}</b> kanalida nazoratchisiz.`, menuFor(u));
+      return send(chat, TRV(u, "✅ Kod tasdiqlandi! Siz <b>{title}</b> kanalida nazoratchisiz.", { title: esc(ch.title) }), menuFor(u));
     }
     if (v.reason && !/noto‘g‘ri/.test(v.reason)) lastReason = v.reason;
   }
@@ -1238,14 +1469,14 @@ async function handleMessage(msg) {
   const { user: u, isNew } = getUser(msg.from, chat);
   if (u.status === "blocked") {
     if (/^\/appeal/i.test(text)) {
-      if (db.appeals.some((a) => a.userId === u.id && a.status === "NEW")) return send(chat, "📨 Apellyatsiyangiz allaqachon ko‘rib chiqilmoqda.");
+      if (db.appeals.some((a) => a.userId === u.id && a.status === "NEW")) return send(chat, TR(u, "📨 Apellyatsiyangiz allaqachon ko‘rib chiqilmoqda."));
       db.appeals.push({ id: nid("ap"), userId: u.id, userName: u.displayName, text: text.replace(/^\/appeal\s*/i, "").slice(0, 500) || "—", status: "NEW", createdAt: nowStr() });
       save();
-      return send(chat, "📨 Apellyatsiya qabul qilindi. Admin ko‘rib chiqadi va javob yuboradi.");
+      return send(chat, TR(u, "📨 Apellyatsiya qabul qilindi. Admin ko‘rib chiqadi va javob yuboradi."));
     }
-    return send(chat, "⛔ Hisobingiz bloklangan.\n\nApellyatsiya yuborish: /appeal <sabab/matn>");
+    return send(chat, TR(u, "⛔ Hisobingiz bloklangan.\n\nApellyatsiya yuborish: /appeal <sabab/matn>"));
   }
-  if (S().isBotPaused && !isAdmin(u.telegramId)) return send(chat, "\u23F8 Bot vaqtincha to\u2018xtatilgan. Keyinroq urinib ko\u2018ring.");
+  if (S().isBotPaused && !isAdmin(u.telegramId)) return send(chat, TR(u, "\u23F8 Bot vaqtincha to\u2018xtatilgan. Keyinroq urinib ko\u2018ring."));
   if (text.startsWith("/start")) {
     const payload = text.split(/\s+/)[1] || "";
     if (isNew && /^REF_\d+$/.test(payload) && payload !== u.referralCode) {
@@ -1319,7 +1550,7 @@ async function handleCallback(cq) {
   const [cmd, arg] = String(cq.data || "").split(":");
   const key = `${cmd}:${arg}`;
   if (key === "sp:check") {
-    if (await sponsorGate(u, chat)) return send(chat, "\u2705 Rahmat! Endi botdan foydalanishingiz mumkin.", menuFor(u));
+    if (await sponsorGate(u, chat)) return send(chat, TR(u, "\u2705 Rahmat! Endi botdan foydalanishingiz mumkin."), menuFor(u));
     return;
   }
   if (!await sponsorGate(u, chat)) return;
@@ -1333,7 +1564,7 @@ async function handleCallback(cq) {
       return send(chat, T(u, "ch_add_steps"));
     case "igadd":
       u.state = { type: "add_ig" };
-      return send(chat, "\u{1F4F8} Instagram username yoki havolasini yuboring. Bekor qilish: /cancel");
+      return send(chat, TR(u, "\u{1F4F8} Instagram username yoki havolasini yuboring. Bekor qilish: /cancel"));
     case "ord": {
       const d = destOf(arg);
       if (!d) return;
@@ -1351,14 +1582,14 @@ async function handleCallback(cq) {
     }
     case "ordok": {
       const sc = u.state;
-      if (!sc || sc.type !== "order_confirm") return send(chat, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor.", menuFor(u));
+      if (!sc || sc.type !== "order_confirm") return send(chat, TR(u, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor."), menuFor(u));
       return createOrderConfirmed(u, sc.destId, sc.qty, chat);
     }
     case "ordno":
       u.state = null;
       return send(chat, T(u, "ord_cancelled"), menuFor(u));
     case "cx":
-      return send(chat, "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi.", inline([[{ text: "Ha, bekor qilish", callback_data: `cxy:${arg}` }, { text: "Yo\u2018q", callback_data: "noop:0" }]]));
+      return send(chat, TR(u, "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi."), inline([[{ text: T(u, "cancel_yes"), callback_data: `cxy:${arg}` }, { text: T(u, "cancel_no"), callback_data: "noop:0" }]]));
     case "cxy":
       return cancelOrder(u, arg, chat);
     case "chd": {
@@ -1371,8 +1602,8 @@ async function handleCallback(cq) {
     case "chdel": {
       const ch = db.channels.find((c) => c.id === arg);
       if (!ch || !(ch.ownerId === u.id || (ch.controllers || []).some((k) => k.userId === u.id))) return;
-      return send(chat, `🗑 <b>${esc(ch.title)}</b> kanalini botdan uzmoqchimisiz?\n\nFaol buyurtmalar bekor qilinadi va bajarilmagan qismining krediti qaytariladi.`, inline([
-        [{ text: "Ha, uzish", callback_data: `chdely:${ch.id}` }, { text: "Yo‘q", callback_data: "noop:0" }]
+      return send(chat, TRV(u, "🗑 <b>{title}</b> kanalini botdan uzmoqchimisiz?\n\nFaol buyurtmalar bekor qilinadi va bajarilmagan qismining krediti qaytariladi.", { title: esc(ch.title) }), inline([
+        [{ text: T(u, "disc_yes"), callback_data: `chdely:${ch.id}` }, { text: T(u, "disc_no"), callback_data: "noop:0" }]
       ]));
     }
     case "chdely": {
@@ -1385,7 +1616,7 @@ async function handleCallback(cq) {
       db.channels = db.channels.filter((x) => x.id !== ch.id);
       for (const t of db.tasks) if (t.destinationId === ch.id && OPEN.has(t.status)) t.status = "CANCELLED";
       save();
-      return send(chat, `✅ <b>${esc(ch.title)}</b> uzildi.` + (refunded ? `\n↩️ ${refunded} kredit qaytarildi.` : "") + `\n\n${balanceLine(u)}`, menuFor(u));
+      return send(chat, TRV(u, "✅ <b>{title}</b> uzildi.", { title: esc(ch.title) }) + (refunded ? TRV(u, "\n↩️ {refund} kredit qaytarildi.", { refund: refunded }) : "") + `\n\n${balanceLine(u)}`, menuFor(u));
     }
     case "ctl": {
       const ch = db.channels.find((c) => c.id === arg && c.ownerId === u.id);
@@ -1400,7 +1631,7 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
     }
     case "ctlin":
       u.state = { type: "ctl_code" };
-      return send(chat, "\u{1F511} 6 xonali kodni yuboring:");
+      return send(chat, TR(u, "\u{1F511} 6 xonali kodni yuboring:"));
     case "cmp":
       u.state = { type: "complaint_pick", destinationId: null, destinationTitle: null };
       return send(chat, T(u, "cmp_choose"), inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
@@ -1423,11 +1654,11 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
     case "refa": {
       const [rid, cid] = String(arg || "").split("|");
       const ref = db.referrals.find((r) => r.id === rid && r.referrerId === u.id && !r.bonusIssued);
-      if (!ref) return send(chat, "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi.", menuFor(u));
+      if (!ref) return send(chat, TR(u, "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi."), menuFor(u));
       const ch = channelsOf(u).find((c) => c.id === cid);
-      if (!ch) return send(chat, "Kanal topilmadi.", menuFor(u));
+      if (!ch) return send(chat, TR(u, "Kanal topilmadi."), menuFor(u));
       const r = allocateRefBonus(u, ref, ch);
-      return send(chat, `🎁 Referal bonusi <b>${esc(ch.title)}</b> kanaliga yo‘naltirildi: <b>${r.units}</b> ta obunachi navbatga qo‘shildi.`, menuFor(u));
+      return send(chat, TRV(u, "🎁 Referal bonusi <b>{title}</b> kanaliga yo‘naltirildi: <b>{units}</b> ta obunachi navbatga qo‘shildi.", { title: esc(ch.title), units: r.units }), menuFor(u));
     }
     case "lang": {
       if (!STR[arg]) return;
@@ -1831,6 +2062,72 @@ function cancelOrderAdmin(o) {
   }
   save();
   return { refundCredits, refundableUnits };
+}
+// --- Moderatsiya skaneri (spec §16) ---
+// Bot kanal kontentini o'qiy olmaydi — faqat nom/username, tezlik va shikoyat
+// signallari tekshiriladi. Yakuniy qaror har doim admin tomonidan qabul qilinadi.
+var MOD_BAD = [
+  "scam", "casino", "kazino", "porn", "adult", "18+", "betting", "stavka",
+  "giveaway", "lottery", "pump", "signal", "free money", "soxta", "fake subs",
+  "obunachi sotamiz", "kripto signal", "invest 100"
+];
+var modSeen = new Map();
+function modFlag(kind, reason, data, severity) {
+  const key = kind + "|" + reason + "|" + (data.channelId || data.userId || data.username || "");
+  const now = Date.now();
+  const last = modSeen.get(key) || 0;
+  if (now - last < 6 * 36e5) return null;
+  modSeen.set(key, now);
+  const flag = {
+    id: nid("mf"),
+    at: nowStr(),
+    kind,
+    reason,
+    severity: severity || "medium",
+    userId: data.userId || "",
+    userName: data.userName || "",
+    channelId: data.channelId || "",
+    title: data.title || data.username || "",
+    status: "OPEN"
+  };
+  db.moderationFlags = db.moderationFlags || [];
+  db.moderationFlags.push(flag);
+  if (db.moderationFlags.length > 1000) db.moderationFlags.splice(0, 300);
+  save();
+  for (const a of ADMIN_IDS) {
+    send(a, "\u{1F6E1}\uFE0F <b>Moderatsiya signali</b>\n\n" + esc(kind) + " \u2022 " + esc(severity || "medium") + "\n" + esc(reason) + "\n" + esc(flag.title) + " (" + esc(flag.userName || flag.userId) + ")");
+  }
+  return flag;
+}
+function hasBadWord(text) {
+  const t = String(text || "").toLowerCase();
+  return MOD_BAD.find((w) => t.includes(w)) || "";
+}
+function moderationScan(kind, data) {
+  data = data || {};
+  if (kind === "channel" || kind === "instagram") {
+    const bad = hasBadWord(data.title) || hasBadWord(data.username);
+    if (bad) return modFlag(kind, "Taqiqlangan so'z: " + bad, data, "high");
+    if (kind === "channel" && data.userId) {
+      const day = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+      const recent = db.channels.filter((c) => c.ownerId === data.userId && String(c.createdAt || "") >= day).length;
+      if (recent >= 3) return modFlag(kind, "Bir kunda " + recent + " ta kanal ulandi", data, "medium");
+    }
+    return null;
+  }
+  if (kind === "order") {
+    if (Number(data.qty) >= 5000) return modFlag(kind, "Juda katta buyurtma: " + data.qty, data, "medium");
+    return null;
+  }
+  if (kind === "complaint") {
+    const chId = data.channelId;
+    if (!chId) return null;
+    const since = Date.now() - 864e5;
+    const n = db.complaints.filter((c) => c.destinationId === chId && Date.parse(c.createdAt) >= since).length;
+    if (n >= 3) return modFlag(kind, "Kanalga 24 soatda " + n + " ta shikoyat", data, "high");
+    return null;
+  }
+  return null;
 }
 // --- News bot: Gemini bilan yangilik yaratib, kanalga post qiladi ---
 // Token faqat env'dan (repo'ga yozilmaydi)
@@ -2330,7 +2627,8 @@ var server = http.createServer((req, res) => {
       channel: "channels", orders: "orders", order: "orders", tasks: "tasks", bots: "bots",
       settings: "settings", complaints: "complaints", sponsors: "sponsors", instagram: "instagram",
       referrals: "referrals", moderation: "moderation", appeals: "moderation", analytics: "analytics",
-      health: "health", audit: "audit", admins: "admins", export: "export", broadcast: "settings"
+      health: "health", audit: "audit", admins: "admins", export: "export", broadcast: "settings",
+      backup: "health", backups: "health"
     };
     const needPerm = PERM_OF_ROUTE[route] || "read";
     const role = (req.auth && req.auth.role) || "owner";
@@ -2429,6 +2727,8 @@ var server = http.createServer((req, res) => {
               complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
               appealsOpen: db.appeals.filter((a) => a.status === "NEW").length,
               blocked: Object.values(db.users).filter((u) => u.status === "blocked").length,
+              flagsOpen: (db.moderationFlags || []).filter((f) => f.status === "OPEN").length,
+              flags: (db.moderationFlags || []).slice().reverse().slice(0, 100),
               items: Object.values(db.users)
                 .filter((u) => u.status === "blocked" || (u.moderation && u.moderation.length))
                 .slice(0, 200)
@@ -2465,6 +2765,14 @@ var server = http.createServer((req, res) => {
             ch.restricted = true;
             ch.restrictedAt = nowStr();
             audit(req, "mod_restrict_channel", ch.title, note);
+          } else if (b.action === "dismiss_flag") {
+            const f = (db.moderationFlags || []).find((x) => x.id === String(b.id || ""));
+            if (!f) throw new Error("Signal topilmadi");
+            f.status = "DISMISSED";
+            f.resolvedAt = nowStr();
+            save();
+            audit(req, "mod_dismiss_flag", f.id, f.reason);
+            return { ok: true };
           } else if (b.action === "pause_orders") {
             for (const o of db.orders.filter((o2) => o2.userId === u.id && o2.status === "active")) {
               cancelOrderAdmin(o);
@@ -2534,6 +2842,15 @@ var server = http.createServer((req, res) => {
             }
           };
         }
+        case "backup": {
+          if (!isPost) return { items: await listBackups(), lastBackupAt: db.lastBackupAt };
+          const ok = await backupNow("qo'lda");
+          audit(req, "backup_manual", ok ? "ok" : "xato");
+          return { ok };
+        }
+        case "backups": {
+          return { items: await listBackups(), lastBackupAt: db.lastBackupAt };
+        }
         case "health": {
           const mem = process.memoryUsage();
           return {
@@ -2556,6 +2873,8 @@ var server = http.createServer((req, res) => {
             })),
             news: { enabled: newsCfg().enabled, lastPostAt: newsCfg().lastPostAt, lastStatus: newsCfg().lastStatus, lastError: newsCfg().lastError },
             lastExportAt: db.lastExportAt ? new Date(db.lastExportAt).toISOString() : "",
+            lastBackupAt: db.lastBackupAt ? new Date(db.lastBackupAt).toISOString() : "",
+            backups: await listBackups(),
             auditEntries: db.auditLog.length,
             sessions: SESSIONS.size,
             node: process.version
@@ -3047,6 +3366,7 @@ async function main() {
   startKeepAlive();
   startNewsScheduler();
   setInterval(() => hourlyReport().catch((e) => console.error(e)), 6e4);
+  startBackupJob();
   setInterval(() => maintenance().catch((e) => console.error(e)), 15 * 6e4);
   setInterval(() => {
     for (const b of botsList()) {

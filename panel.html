@@ -5,85 +5,102 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Boshqaruv paneli</title>
 <style>
-:root{color-scheme:dark}
+:root{color-scheme:dark;--bg:#0a0d13;--panel:#101521;--line:#1d2634;--line2:#151c29;--txt:#e7ecf5;--dim:#8593a9;--accent:#5b7cfa;--ok:#4ade80;--warn:#fbbf24;--err:#f87171;--r:12px}
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.5 system-ui,"Segoe UI",Arial;background:#0b0d12;color:#e6e9f0;display:flex;min-height:100vh}
-aside{width:230px;flex:0 0 230px;background:#11141b;border-right:1px solid #1e2430;padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto}
-aside h1{font-size:15px;margin:0 12px 18px;letter-spacing:.3px}
-aside h1 span{color:#5b7cfa;display:block;font-size:11px;font-weight:400;letter-spacing:0;margin-top:2px;color:#7c869c}
-nav button{display:block;width:100%;text-align:left;background:none;border:0;color:#9aa4b8;padding:9px 12px;border-radius:8px;font:inherit;cursor:pointer;margin-bottom:2px}
-nav button:hover{background:#171b24;color:#e6e9f0}
-nav button.on{background:#1b2333;color:#fff;box-shadow:inset 2px 0 0 #5b7cfa}
-nav a{display:block;padding:9px 12px;color:#7c869c;text-decoration:none;border-radius:8px;font-size:13px}
-nav a:hover{background:#171b24;color:#c9d2e3}
-main{flex:1;padding:22px 26px;min-width:0}
-h2{font-size:18px;margin:0 0 4px}
-.sub{color:#7c869c;font-size:12.5px;margin-bottom:18px}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:22px}
-.card{background:#11141b;border:1px solid #1e2430;border-radius:12px;padding:14px}
-.card .k{font-size:11.5px;color:#7c869c;text-transform:uppercase;letter-spacing:.5px}
-.card .v{font-size:23px;font-weight:700;margin-top:4px}
-.box{background:#11141b;border:1px solid #1e2430;border-radius:12px;padding:16px;margin-bottom:18px}
-.box h3{margin:0 0 12px;font-size:14px}
+body{margin:0;font:14px/1.55 "Segoe UI",system-ui,Arial;background:radial-gradient(1200px 600px at 0% -10%,#16213a 0%,transparent 60%),var(--bg);color:var(--txt);display:flex;min-height:100vh}
+aside{width:246px;flex:0 0 246px;background:linear-gradient(180deg,#0e1420,#0b0f19);border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 10px 16px;margin-bottom:6px;border-bottom:1px solid var(--line2)}
+.brand .logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#5b7cfa,#8b5cf6);display:grid;place-items:center;font-weight:800;font-size:14px;color:#fff}
+aside h1{font-size:14px;margin:0;letter-spacing:.2px;line-height:1.2}
+aside h1 span{display:block;color:var(--dim);font-size:11px;font-weight:400;margin-top:2px}
+nav .grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:#5c6880;padding:14px 12px 6px}
+nav button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;color:#9aa4b8;padding:8px 12px;border-radius:9px;font:inherit;font-size:13.5px;cursor:pointer;margin-bottom:1px;transition:.15s}
+nav button:hover{background:#151d2c;color:#e7ecf5;transform:translateX(2px)}
+nav button.on{background:linear-gradient(90deg,rgba(91,124,250,.22),rgba(91,124,250,.05));color:#fff;box-shadow:inset 2px 0 0 var(--accent)}
+nav a{display:block;padding:8px 12px;color:var(--dim);text-decoration:none;border-radius:9px;font-size:13px}
+nav a:hover{background:#151d2c;color:#e7ecf5}
+main{flex:1;padding:0 30px 40px;min-width:0}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:16px 0 18px;margin-bottom:8px;border-bottom:1px solid var(--line2);position:sticky;top:0;background:rgba(10,13,19,.86);backdrop-filter:blur(8px);z-index:5}
+.topbar .t{font-size:12px;color:var(--dim)}
+.topbar .who{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+.avatar{width:26px;height:26px;border-radius:50%;background:#1d2841;color:#9db2ff;display:grid;place-items:center;font-size:11px;font-weight:700}
+h2{font-size:19px;margin:6px 0 4px;letter-spacing:-.2px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;margin-bottom:22px}
+.card{background:linear-gradient(160deg,#121a28,#0f1420);border:1px solid var(--line);border-radius:var(--r);padding:14px 15px;position:relative;overflow:hidden}
+.card::after{content:"";position:absolute;inset:auto -30px -40px auto;width:90px;height:90px;border-radius:50%;background:radial-gradient(circle,rgba(91,124,250,.18),transparent 70%)}
+.card .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.card .v{font-size:24px;font-weight:700;margin-top:6px;letter-spacing:-.5px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 16px 14px;margin-bottom:18px}
+.box h3{margin:0 0 12px;font-size:13.5px;letter-spacing:.2px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:#7c869c;font-weight:500;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid #1e2430;white-space:nowrap}
-td{padding:8px;border-bottom:1px solid #171b24;vertical-align:top}
+th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
+tbody tr:hover{background:#0d1421}
 tr:last-child td{border-bottom:0}
 .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
-.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:#1c2331;color:#9aa4b8}
-.pill.ok{background:#10301d;color:#64dd94}
-.pill.err{background:#3a1616;color:#ff9b9b}
-.pill.warn{background:#33280f;color:#f0c264}
-.btn{background:#2a5bff;color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:600;cursor:pointer}
-.btn:hover{filter:brightness(1.1)}
-.btn.ghost{background:#1b2230;color:#c9d2e3;font-weight:500}
-.btn.danger{background:#7a2020}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;background:#1a2332;color:#9aa4b8;border:1px solid #223047}
+.pill.ok{background:rgba(74,222,128,.12);color:#6ee7a0;border-color:rgba(74,222,128,.25)}
+.pill.err{background:rgba(248,113,113,.12);color:#fca5a5;border-color:rgba(248,113,113,.25)}
+.pill.warn{background:rgba(251,191,36,.12);color:#fcd34d;border-color:rgba(251,191,36,.25)}
+.btn{background:linear-gradient(180deg,#3f63ff,#2a4de0);color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;font-weight:600;cursor:pointer;transition:.15s;box-shadow:0 2px 10px rgba(42,77,224,.25)}
+.btn:hover{filter:brightness(1.12)}
+.btn.ghost{background:#18202f;color:#c9d2e3;font-weight:500;box-shadow:none;border:1px solid #223047}
+.btn.ghost:hover{background:#1d2739}
+.btn.danger{background:#6d2020;box-shadow:none}
 .btn:disabled{opacity:.5;cursor:default}
-.btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
-input,textarea,select{background:#0d1017;border:1px solid #232a38;color:#e6e9f0;border-radius:8px;padding:8px 10px;font:inherit;width:100%}
-input:focus,textarea:focus{outline:1px solid #2a5bff;border-color:#2a5bff}
-label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
+.btn.sm{padding:5px 10px;font-size:12px;border-radius:7px}
+input,textarea,select{background:#0c1119;border:1px solid #222b3b;color:var(--txt);border-radius:9px;padding:9px 11px;font:inherit;width:100%;transition:.15s}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,124,250,.15)}
+label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .row>*{flex:1;min-width:150px}
 .row .btn{flex:0 0 auto;min-width:0}
-.muted{color:#7c869c}
+.muted{color:var(--dim)}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.toast{position:fixed;right:18px;bottom:18px;background:#16261b;border:1px solid #235c36;color:#8fe2ae;padding:10px 16px;border-radius:10px;font-size:13px;display:none;z-index:50;max-width:340px}
+.toast{position:fixed;right:18px;bottom:18px;background:#12261a;border:1px solid #235c36;color:#8fe2ae;padding:11px 16px;border-radius:10px;font-size:13px;display:none;z-index:50;max-width:340px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
 .toast.err{background:#2b1414;border-color:#5f2626;color:#ffb4b4}
-.tab{display:none}.tab.on{display:block}
-.empty{color:#6d768a;padding:14px;text-align:center;font-size:13px}
-.chk{display:flex;align-items:center;gap:8px;margin:8px 0;color:#c9d2e3;font-size:13px}
-.chk input{width:16px;height:16px;flex:0 0 16px}
-@media(max-width:760px){body{flex-direction:column}aside{width:100%;flex:none;height:auto;position:static}nav{display:flex;flex-wrap:wrap;gap:4px}nav button{width:auto}main{padding:16px}}
+.tab{display:none;animation:fade .18s ease}.tab.on{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+.empty{color:#6d768a;padding:18px;text-align:center;font-size:13px;border:1px dashed #1f2939;border-radius:10px}
+.chk{display:flex;align-items:center;gap:9px;margin:8px 0;color:#c9d2e3;font-size:13px}
+.chk input{width:16px;height:16px;flex:0 0 16px;accent-color:var(--accent)}
+@media(max-width:860px){body{flex-direction:column}aside{width:100%;flex:none;height:auto;position:static}nav{display:flex;flex-wrap:wrap;gap:4px}nav button{width:auto}nav .grp{display:none}main{padding:0 16px 30px}.topbar{position:static}}
 </style>
 </head>
 <body>
 <aside>
-  <h1>Obuna 2X <span>boshqaruv paneli</span></h1>
+  <div class="brand"><div class="logo">2X</div><h1>Obuna 2X<span>boshqaruv paneli</span></h1></div>
   <nav id="nav">
+    <div class="grp">Asosiy</div>
     <button data-tab="overview" class="on">Umumiy</button>
-    <button data-tab="bots">Botlar (tokenlar)</button>
+    <button data-tab="analytics">Statistika va analitika</button>
+    <div class="grp">Foydalanuvchilar</div>
     <button data-tab="users">Foydalanuvchilar</button>
     <button data-tab="channels">Kanallar</button>
+    <button data-tab="instagram">Instagram profillari</button>
     <button data-tab="orders">Buyurtmalar</button>
     <button data-tab="tasks">Vazifalar</button>
-    <button data-tab="complaints">Shikoyatlar</button>
-    <button data-tab="sponsors">Homiy kanallar</button>
-    <button data-tab="instagram">Instagram profillari</button>
     <button data-tab="referrals">Referallar</button>
+    <div class="grp">Boshqaruv</div>
+    <button data-tab="complaints">Shikoyatlar</button>
     <button data-tab="moderation">Moderatsiya markazi</button>
     <button data-tab="appeals">Apellyatsiyalar</button>
-    <button data-tab="analytics">Statistika va analitika</button>
+    <button data-tab="sponsors">Homiy kanallar</button>
+    <button data-tab="bots">Botlar (tokenlar)</button>
+    <button data-tab="settings">Sozlamalar</button>
+    <div class="grp">Tizim</div>
     <button data-tab="health">Tizim sog'lig'i</button>
     <button data-tab="audit">Audit jurnali</button>
     <button data-tab="admins">Adminlar va rollar</button>
-    <button data-tab="settings">Sozlamalar</button>
     <a href="/news">Yangiliklar boti &rarr;</a>
-    <a href="/logout" id="logout-link">Chiqish</a>
-    <div class="muted" id="whoami" style="margin-top:10px;font-size:12px;padding:0 14px"></div>
   </nav>
 </aside>
 <main>
+  <div class="topbar">
+    <div class="t" id="top-title">Boshqaruv paneli</div>
+    <div class="who"><div class="avatar" id="who-av">?</div><span id="who-name">…</span><span id="who-role" class="pill"></span><a href="/logout" style="color:#8593a9;text-decoration:none;margin-left:8px">Chiqish</a></div>
+  </div>
   <section class="tab on" id="tab-overview">
     <h2>Umumiy holat</h2>
     <div class="sub" id="ov-sub">yuklanmoqda…</div>
@@ -209,7 +226,8 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
     <h2>Moderatsiya markazi</h2>
     <div class="sub">Ogohlantirish, buyurtmalarni muzlatish, kanalni cheklash va bloklash. Har bir amal audit jurnaliga yoziladi.</div>
     <div class="cards" id="mod-cards"></div>
-    <div class="box"><div id="mod-list"></div></div>
+    <div class="box"><h3>Avtomatik signallar</h3><div id="mod-flags"></div></div>
+    <div class="box"><h3>Foydalanuvchilar</h3><div id="mod-list"></div></div>
   </section>
 
   <section class="tab" id="tab-appeals">
@@ -231,6 +249,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
     <div class="cards" id="he-cards"></div>
     <div class="box"><h3>Botlar</h3><div id="he-bots"></div></div>
     <div class="box"><h3>Yangiliklar boti</h3><div id="he-news"></div></div>
+    <div class="box"><h3>Zaxira nusxalar</h3><div id="he-backup"></div></div>
     <div class="box"><h3>Zaxira nusxa (eksport)</h3><div class="muted" style="margin-bottom:10px">Baza holatini JSON fayl sifatida yuklab olish. Har kuni bir marta zaxira nusxa olish tavsiya etiladi.</div><button class="btn" id="he-export">Eksport qilish</button></div>
   </section>
 
@@ -289,6 +308,7 @@ document.querySelectorAll('#nav button').forEach(b => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
     b.classList.add('on');
     $('#tab-' + b.dataset.tab).classList.add('on');
+    $('#top-title').textContent = b.textContent;
     location.hash = b.dataset.tab;
     load(b.dataset.tab);
   };
@@ -559,6 +579,14 @@ async function loadModeration() {
   const d = await api('/api/admin/moderation');
   $('#mod-cards').innerHTML = [['Yangi shikoyatlar', d.complaintsNew], ['Apellyatsiyalar', d.appealsOpen], ['Bloklangan', d.blocked]]
     .map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + money(v) + '</div></div>').join('');
+  $('#mod-flags').innerHTML = (d.flags || []).length ? table(['Vaqt', 'Turi', 'Sabab', 'Obyekt', 'Daraja', ''], d.flags.map(f =>
+    '<tr><td class="muted">' + esc(f.at) + '</td><td><span class="pill">' + esc(f.kind) + '</span></td><td>' + esc(f.reason) + '</td>' +
+    '<td>' + esc(f.title || f.userName || f.userId) + '</td><td>' + (f.severity === 'high' ? '<span class="pill err">yuqori</span>' : '<span class="pill warn">o\'rta</span>') + '</td>' +
+    '<td>' + (f.status === 'OPEN' ? '<button class="btn ghost sm" data-flag="' + esc(f.id) + '">Yopish</button>' : '<span class="muted">yopilgan</span>') + '</td></tr>')) : '<div class="empty">Signal yo\'q — hammasi toza</div>';
+  document.querySelectorAll('[data-flag]').forEach(el => el.onclick = async () => {
+    try { await api('/api/admin/moderation', { action: 'dismiss_flag', id: el.dataset.flag }); toast('Signal yopildi'); loadModeration(); }
+    catch (e) { toast(e.message, true); }
+  });
   $('#mod-list').innerHTML = table(['Foydalanuvchi', 'Holat', 'Oxirgi amal', 'Amallar'], d.items.map(u =>
     '<tr><td><b>' + esc(u.name) + '</b>' + (u.username ? ' <span class="muted">@' + esc(u.username) + '</span>' : '') + '<div class="mono muted">' + esc(u.telegramId) + '</div></td>' +
     '<td>' + (u.status === 'blocked' ? '<span class="pill err">bloklangan</span>' : '<span class="pill ok">faol</span>') + '</td>' +
@@ -616,6 +644,13 @@ async function loadHealth() {
   $('#he-bots').innerHTML = table(['Bot', 'Rol', 'Holat', 'Xato'], d.bots.map(b =>
     '<tr><td class="mono">' + esc(b.id) + '</td><td>' + esc(b.role) + '</td><td>' +
     (b.online ? '<span class="pill ok">onlayn</span>' : '<span class="pill err">oflayn</span>') + '</td><td class="muted">' + esc(b.lastError || '—') + '</td></tr>'));
+  $('#he-backup').innerHTML = '<div class="muted" style="margin-bottom:10px">Oxirgi zaxira: <b>' + esc(d.lastBackupAt || 'hech qachon') + '</b> · kunlik avtomatik nusxa (14 kun saqlanadi)</div>' +
+    table(['Sana', 'Hajm (KB)'], (d.backups || []).map(b => '<tr><td>' + esc(b.at) + '</td><td>' + money(b.sizeKb) + '</td></tr>')) +
+    '<div style="margin-top:12px"><button class="btn ghost" id="he-backup-now">Hozir zaxira olish</button></div>';
+  $('#he-backup-now').onclick = async () => {
+    try { await api('/api/admin/backup', {}); toast('Zaxira nusxa olindi'); loadHealth(); }
+    catch (e) { toast(e.message, true); }
+  };
   $('#he-news').innerHTML = '<div class="muted">Yoqilgan: ' + (d.news.enabled ? 'ha' : 'yo‘q') + ' · oxirgi post: ' + esc(d.news.lastPostAt || '—') + ' · holat: ' + esc(d.news.lastStatus || '—') +
     (d.news.lastError ? ' · xato: ' + esc(d.news.lastError) : '') + '</div><div class="muted" style="margin-top:6px">Oxirgi eksport: ' + esc(d.lastExportAt || 'hech qachon') + '</div>';
   $('#he-export').onclick = async () => {
@@ -679,7 +714,9 @@ const TAB_PERM = { instagram: 'instagram', referrals: 'referrals', moderation: '
 (async () => {
   try {
     const me = await api('/api/admin/me');
-    $('#whoami').textContent = me.username + ' · ' + me.role;
+    $('#who-name').textContent = me.username;
+    $('#who-role').textContent = me.role;
+    $('#who-av').textContent = (me.username || '?').slice(0, 2).toUpperCase();
     document.querySelectorAll('#nav button').forEach(b => {
       const p = TAB_PERM[b.dataset.tab];
       if (!p) return;
