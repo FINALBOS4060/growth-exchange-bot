@@ -348,18 +348,232 @@ async function checkMember(chat, userId) {
   if (/user not found|PARTICIPANT_ID_INVALID/i.test(r.description || "")) return "not_member";
   return "error";
 }
-var MENU = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "\u{1F4E2} Kanallarim" }, { text: "\u{1F4CB} Vazifalar" }],
-      [{ text: "\u{1F6D2} Buyurtmalarim" }, { text: "\u{1F4F8} Instagram" }],
-      [{ text: "\u{1F465} Referal tizimi" }, { text: "\u{1F4CA} Statistika" }],
-      [{ text: "\u{1F6DF} Yordam" }, { text: "\u2699\uFE0F Sozlamalar" }]
-    ],
-    resize_keyboard: true
+// --- Ko'p tillilik (spec §5) ---
+// Barcha foydalanuvchi matnlari shu katalogda. Yangi matn qo'shsangiz uch tilga ham yozing.
+var STR = {
+  uz: {
+    b_channels: "📢 Kanallarim",
+    b_tasks: "📋 Vazifalar",
+    b_orders: "🛒 Buyurtmalarim",
+    b_instagram: "📸 Instagram",
+    b_referrals: "👥 Referal tizimi",
+    b_stats: "📊 Statistika",
+    b_help: "🛟 Yordam",
+    b_settings: "⚙️ Sozlamalar",
+    start_new: "Assalomu alaykum, {name}! 👋\n\nBotga xush kelibsiz! Quyida qisqa yo‘riqnoma.",
+    start_back: "Assalomu alaykum, {name}! 🚀\n\nBu Telegram va Instagram o‘zaro o‘sish platformasi.\nBoshqa kanallarga obuna bo‘lib kredit ishlang va o‘z kanalingizga obunachi buyurtma qiling.\n\n{balance}",
+    guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {per} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{per} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
+    bonus_line: "\nBirinchi kanal uchun +{bonus} kredit sovg‘a.",
+    bal: "💰 Balans: <b>{a}</b> kredit  •  🔒 Band: {r} kredit",
+    tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: hozir hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.\n\n{balance}",
+    tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nMuammo bo‘lsa: kanal yonidagi <b>⚠️N</b> tugmasi.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
+    tasks_btn_done: "✅ Obuna bo‘ldim",
+    tasks_btn_refresh: "🔄 Yangilash",
+    ch_title: "📢 <b>Kanallaringiz: {n} ta</b>\n\n{list}\n\n{balance}",
+    ch_none: "Hali kanal ulanmagan. Ulash uchun:\n1. Botni kanalingizga <b>administrator</b> qiling\n2. “➕ Kanal qo‘shish” tugmasini bosing\n3. Kanal manzilini yuboring (masalan: @kanal_nomi)",
+    ch_add: "➕ Kanal qo‘shish",
+    ch_code_in: "🔑 Kod kiritish",
+    ch_back: "⬅️ Orqaga",
+    ch_buy: "🛒 Buyurtma berish",
+    ch_unlink: "🗑 Kanalni uzish",
+    ch_controller: "nazoratchi",
+    ord_title: "🛒 <b>Buyurtmalaringiz: {n} ta</b>\n{balance}\n\n{list}",
+    ord_none: "Hali buyurtma bermagansiz.\n\n“📢 Kanallarim” → kanalingizni tanlang → nechta obunachi kerakligini yozing.",
+    ord_qty: "🛒 <b>{title}</b>\n\nNechta obunachi kerakligini yozing (10–10000).\n• Narx: {unit} kredit / 1 ta\n• {balance}\n• Shu kredit bilan ko‘pi bilan: {max} ta\n\nBekor qilish: /cancel",
+    ord_summary: "📝 <b>Buyurtma xulosasi</b>\n\n• {title}\n• Miqdor: <b>{qty}</b> ta\n• Narx: {unit} × {qty} = <b>{total}</b> kredit\n• Buyurtmadan keyingi balans: {left} kredit\n\nTasdiqlasangiz kredit band qilinadi.",
+    ord_yes: "✅ Tasdiqlash",
+    ord_no: "❌ Bekor qilish",
+    ord_created: "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)\n\nObunachilar navbat bilan qo‘shiladi.",
+    ord_cancelled: "❌ Buyurtma bekor qilindi. Kredit band qilinmadi.",
+    ord_short: "❌ Kredit yetmayapti.\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {lack} kredit\n\n📋 Vazifalarni bajarib kredit to‘plang.",
+    stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit — ishlatsa bo‘ladigan\n🔒 Band: {r} kredit — faol buyurtmaga band\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
+    ref_title: "👥 <b>Referal tizimi</b>\n\nDo‘stingiz shu havola bilan kirib <b>bitta vazifa</b> bajarsa, sizga <b>+{reward} kredit</b> bonus beriladi.\nBonus kanalingizga obunachi sifatida yo‘naltiriladi (1 obunachi = {unit} kredit).\n\nTaklif qilganlar: {n} ta • Yo‘naltirilgan bonuslar: {paid} ta{pending}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
+    ref_pending: "\n\n🎁 Yo‘naltirilmagan bonus: <b>{amount} kredit</b>{hint}",
+    ref_alloc: "🎁 Bonusni kanalga yo‘naltirish",
+    set_title: "⚙️ <b>Sozlamalar</b>\n\n🌐 Til: {lang}\n\n🔔 <b>Bildirishnomalar</b>\nSoatlik hisobot: {hourly}\n• Yangi obunachilar: {sub}\n• Referal bonuslar: {ref}\n• Buyurtma holati: {ord}\n• Texnik xabarlar: {tech}\n\nKerakli bo‘limni bosing — yoqiladi yoki o‘chadi.",
+    set_hourly_on: "🔕 Hisobotni o‘chirish",
+    set_hourly_off: "🔔 Hisobotni yoqish",
+    help: "🛟 <b>Yordam — qisqa qo‘llanma</b>\n\n📢 <b>Kanallarim</b> — kanal ulash, kanal statistikasi, obunachi buyurtish.\n📋 <b>Vazifalar</b> — 10 talik kanallar; obuna bo‘lib “✅ Obuna bo‘ldim” bosing.\n🛒 <b>Buyurtmalarim</b> — buyurtmalar holati; bekor qilsangiz kreditingiz qaytadi.\n📸 <b>Instagram</b> — profil ulash (rasmiy tekshiruv yo‘q, tasdiqlash o‘zingizga asoslanadi).\n👥 <b>Referal</b> — taklif havolasi va bonusni kanalga yo‘naltirish.\n📊 <b>Statistika</b> — balans, sarf, bajarilgan vazifalar.\n⚙️ <b>Sozlamalar</b> — til va bildirishnomalar.\n\n<b>Qoidalar:</b> obuna haqiqiy tekshiriladi; obunadan chiqsangiz kredit qaytarib olinadi; soxta harakatda hisob bloklanadi; kanal uchun bot administrator bo‘lishi shart.",
+    cmp_choose: "Muammo turini tanlang:",
+    cmp_enter: "📝 <b>{cat}</b>\n\nMuammoni batafsil yozing. Bekor qilish: /cancel",
+    cmp_ok: "🛟 Murojaat qabul qilindi!\nBilet: <b>{ticket}</b>\nAdminlar tez orada javob beradi.",
+    langs: "🌐 Tilni tanlang:",
+    lang_names: "O‘zbekcha"
+  },
+  ru: {
+    b_channels: "📢 Мои каналы",
+    b_tasks: "📋 Задания",
+    b_orders: "🛒 Мои заказы",
+    b_instagram: "📸 Instagram",
+    b_referrals: "👥 Рефералы",
+    b_stats: "📊 Статистика",
+    b_help: "🛟 Помощь",
+    b_settings: "⚙️ Настройки",
+    start_new: "Здравствуйте, {name}! 👋\n\nДобро пожаловать! Ниже короткая инструкция.",
+    start_back: "Здравствуйте, {name}! 🚀\n\nЭто платформа взаимного роста в Telegram и Instagram.\nПодписывайтесь на другие каналы, зарабатывайте кредиты и заказывайте подписчиков себе.\n\n{balance}",
+    guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {per} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
+    bonus_line: "\nЗа первый канал +{bonus} кредитов.",
+    bal: "💰 Баланс: <b>{a}</b> кредитов  •  🔒 Резерв: {r}",
+    tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: сейчас никто не заказывал подписчиков. Попробуйте позже.\n\n{balance}",
+    tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nПроблема? Кнопка <b>⚠️N</b> рядом с каналом.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
+    tasks_btn_done: "✅ Я подписался",
+    tasks_btn_refresh: "🔄 Обновить",
+    ch_title: "📢 <b>Ваши каналы: {n}</b>\n\n{list}\n\n{balance}",
+    ch_none: "Канал ещё не добавлен:\n1. Сделайте бота <b>администратором</b> канала\n2. Нажмите “➕ Добавить канал”\n3. Отправьте адрес (например: @kanal_nomi)",
+    ch_add: "➕ Добавить канал",
+    ch_code_in: "🔑 Ввести код",
+    ch_back: "⬅️ Назад",
+    ch_buy: "🛒 Заказать",
+    ch_unlink: "🗑 Отключить канал",
+    ch_controller: "контроллер",
+    ord_title: "🛒 <b>Ваши заказы: {n}</b>\n{balance}\n\n{list}",
+    ord_none: "Заказов пока нет.\n\n“📢 Мои каналы” → выберите канал → укажите количество.",
+    ord_qty: "🛒 <b>{title}</b>\n\nСколько подписчиков нужно? (10–10000)\n• Цена: {unit} кредитов за 1\n• {balance}\n• Максимум на баланс: {max}\n\nОтмена: /cancel",
+    ord_summary: "📝 <b>Проверьте заказ</b>\n\n• {title}\n• Количество: <b>{qty}</b>\n• Цена: {unit} × {qty} = <b>{total}</b> кредитов\n• Баланс после заказа: {left}\n\nПосле подтверждения кредиты будут зарезервированы.",
+    ord_yes: "✅ Подтвердить",
+    ord_no: "❌ Отмена",
+    ord_created: "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)\n\nПодписчики добавляются по очереди.",
+    ord_cancelled: "❌ Заказ отменён. Кредиты не списаны.",
+    ord_short: "❌ Недостаточно кредитов.\n\nНужно: {need}\nУ вас: {have}\nНе хватает: {lack}\n\n📋 Выполняйте задания, чтобы заработать кредиты.",
+    stats_title: "📊 <b>Статистика</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Баланс: <b>{a}</b>\n🔒 Резерв: {r}\n💸 Израсходовано: {s}\n↩️ Возвращено: {ref}\n✅ Выполнено заданий: {done}\n📢 Каналов: {ch}\n🛒 Активных заказов: {ord}",
+    ref_title: "👥 <b>Рефералы</b>\n\nДруг зайдёт по вашей ссылке и выполнит <b>одно задание</b> — вы получите <b>+{reward} кредитов</b>.\nБонус направляется на ваш канал как подписчики (1 подписчик = {unit} кредитов).\n\nПриглашено: {n} • Бонусов направлено: {paid}{pending}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
+    ref_pending: "\n\n🎁 Ненаправленный бонус: <b>{amount} кредитов</b>{hint}",
+    ref_alloc: "🎁 Направить бонус на канал",
+    set_title: "⚙️ <b>Настройки</b>\n\n🌐 Язык: {lang}\n\n🔔 <b>Уведомления</b>\nЕжечасный отчёт: {hourly}\n• Новые подписчики: {sub}\n• Реферальные бонусы: {ref}\n• Статус заказов: {ord}\n• Технические: {tech}",
+    set_hourly_on: "🔕 Отключить отчёт",
+    set_hourly_off: "🔔 Включить отчёт",
+    help: "🛟 <b>Помощь — краткое руководство</b>\n\n📢 <b>Мои каналы</b> — добавить канал, статистика, заказ подписчиков.\n📋 <b>Задания</b> — 10 каналов; подпишитесь и нажмите “✅ Я подписался”.\n🛒 <b>Мои заказы</b> — статус заказов; при отмене кредиты возвращаются.\n📸 <b>Instagram</b> — добавление профиля (официальной проверки нет).\n👥 <b>Рефералы</b> — ссылка и направление бонуса на канал.\n📊 <b>Статистика</b> — баланс, расход, задания.\n⚙️ <b>Настройки</b> — язык и уведомления.\n\n<b>Правила:</b> подписка проверяется; при отписке кредиты списываются; за обман аккаунт блокируется; бот должен быть администратором канала.",
+    cmp_choose: "Выберите тип проблемы:",
+    cmp_enter: "📝 <b>{cat}</b>\n\nОпишите проблему подробно. Отмена: /cancel",
+    cmp_ok: "🛟 Обращение принято!\nТикет: <b>{ticket}</b>\nАдминистратор скоро ответит.",
+    langs: "🌐 Выберите язык:",
+    lang_names: "Русский"
+  },
+  en: {
+    b_channels: "📢 My channels",
+    b_tasks: "📋 Tasks",
+    b_orders: "🛒 My orders",
+    b_instagram: "📸 Instagram",
+    b_referrals: "👥 Referrals",
+    b_stats: "📊 Statistics",
+    b_help: "🛟 Help",
+    b_settings: "⚙️ Settings",
+    start_new: "Hello, {name}! 👋\n\nWelcome! Here is a short guide.",
+    start_back: "Hello, {name}! 🚀\n\nThis is a Telegram and Instagram growth exchange.\nSubscribe to other channels to earn credits, then order subscribers for your own.\n\n{balance}",
+    guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {per} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
+    bonus_line: "\n+{bonus} credits for your first channel.",
+    bal: "💰 Balance: <b>{a}</b> credits  •  🔒 Reserved: {r}",
+    tasks_none: "📋 <b>No tasks yet</b>\n\nReason: nobody has ordered subscribers yet. Try again later.\n\n{balance}",
+    tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nProblem? Use the <b>⚠️N</b> button next to the channel.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
+    tasks_btn_done: "✅ I subscribed",
+    tasks_btn_refresh: "🔄 Refresh",
+    ch_title: "📢 <b>Your channels: {n}</b>\n\n{list}\n\n{balance}",
+    ch_none: "No channel yet:\n1. Make the bot an <b>administrator</b>\n2. Press “➕ Add channel”\n3. Send the address (e.g. @my_channel)",
+    ch_add: "➕ Add channel",
+    ch_code_in: "🔑 Enter code",
+    ch_back: "⬅️ Back",
+    ch_buy: "🛒 Place order",
+    ch_unlink: "🗑 Disconnect channel",
+    ch_controller: "controller",
+    ord_title: "🛒 <b>Your orders: {n}</b>\n{balance}\n\n{list}",
+    ord_none: "No orders yet.\n\n“📢 My channels” → pick a channel → enter quantity.",
+    ord_qty: "🛒 <b>{title}</b>\n\nHow many subscribers? (10–10000)\n• Price: {unit} credits each\n• {balance}\n• Maximum with this balance: {max}\n\nCancel: /cancel",
+    ord_summary: "📝 <b>Order summary</b>\n\n• {title}\n• Quantity: <b>{qty}</b>\n• Price: {unit} × {qty} = <b>{total}</b> credits\n• Balance after order: {left}\n\nCredits are reserved after confirmation.",
+    ord_yes: "✅ Confirm",
+    ord_no: "❌ Cancel",
+    ord_created: "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)\n\nSubscribers are added in queue order.",
+    ord_cancelled: "❌ Order cancelled. No credits were reserved.",
+    ord_short: "❌ Not enough credits.\n\nNeed: {need}\nYou have: {have}\nShortage: {lack}\n\n📋 Complete tasks to earn credits.",
+    stats_title: "📊 <b>Statistics</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balance: <b>{a}</b>\n🔒 Reserved: {r}\n💸 Spent: {s}\n↩️ Refunded: {ref}\n✅ Completed tasks: {done}\n📢 Channels: {ch}\n🛒 Active orders: {ord}",
+    ref_title: "👥 <b>Referrals</b>\n\nA friend joins by your link and completes <b>one task</b> — you get <b>+{reward} credits</b>.\nThe bonus is sent to your channel as subscribers (1 subscriber = {unit} credits).\n\nInvited: {n} • Bonuses sent: {paid}{pending}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
+    ref_pending: "\n\n🎁 Unallocated bonus: <b>{amount} credits</b>{hint}",
+    ref_alloc: "🎁 Send bonus to a channel",
+    set_title: "⚙️ <b>Settings</b>\n\n🌐 Language: {lang}\n\n🔔 <b>Notifications</b>\nHourly report: {hourly}\n• New subscribers: {sub}\n• Referral bonuses: {ref}\n• Order status: {ord}\n• Technical: {tech}",
+    set_hourly_on: "🔕 Turn off report",
+    set_hourly_off: "🔔 Turn on report",
+    help: "🛟 <b>Help — quick guide</b>\n\n📢 <b>My channels</b> — add a channel, stats, order subscribers.\n📋 <b>Tasks</b> — 10 channels; subscribe and press “✅ I subscribed”.\n🛒 <b>My orders</b> — order status; credits are refunded on cancel.\n📸 <b>Instagram</b> — add a profile (no official verification).\n👥 <b>Referrals</b> — your link and bonus allocation.\n📊 <b>Statistics</b> — balance, spending, tasks.\n⚙️ <b>Settings</b> — language and notifications.\n\n<b>Rules:</b> subscriptions are verified; unsubscribing revokes credits; cheating blocks the account; the bot must be a channel administrator.",
+    cmp_choose: "Choose the problem type:",
+    cmp_enter: "📝 <b>{cat}</b>\n\nDescribe the problem. Cancel: /cancel",
+    cmp_ok: "🛟 Request accepted!\nTicket: <b>{ticket}</b>\nAn administrator will reply soon.",
+    langs: "🌐 Choose a language:",
+    lang_names: "English"
   }
 };
-var MENU_LABELS = new Set(MENU.reply_markup.keyboard.flat().map((b) => b.text));
+function langOf(u) {
+  const l = u && u.language;
+  return STR[l] ? l : "uz";
+}
+function T(u, key, vars) {
+  const pack = STR[langOf(u)] || STR.uz;
+  let s = pack[key] != null ? pack[key] : STR.uz[key] != null ? STR.uz[key] : key;
+  for (const k in vars || {}) s = s.split(`{${k}}`).join(String(vars[k]));
+  return s;
+}
+var MENU_KEYS = [["channels", "tasks"], ["orders", "instagram"], ["referrals", "stats"], ["help", "settings"]];
+function menuFor(u) {
+  return {
+    reply_markup: {
+      keyboard: MENU_KEYS.map((row) => row.map((k) => ({ text: T(u, "b_" + k) }))),
+      resize_keyboard: true
+    }
+  };
+}
+var LABEL2KEY = {};
+for (const l of Object.keys(STR)) {
+  for (const k of ["channels", "tasks", "orders", "instagram", "referrals", "stats", "help", "settings"]) {
+    LABEL2KEY[STR[l]["b_" + k]] = k;
+  }
+}
+
+Object.assign(STR.uz, {
+  "paused": "⏸ Vazifalar vaqtincha to‘xtatilgan. Keyinroq urinib ko‘ring.",
+  "ig_off": "📸 Instagram bo‘limi hozircha o‘chirilgan.",
+  "ig_note": "⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi.",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nSo‘ralgan: {req} ta\n✅ Tasdiqlangan: {ver} ta\n👥 Faol: {act} ta\n➖ Chiqqan: {unsub} ta\n⏳ Kutilmoqda: {pend} ta\n\n🔑 Nazoratchilar: {ctl}\n⚠️ Shikoyatlar: {cmp} ta\n\n🛒 <b>Buyurtma tarixi:</b>\n{hist}\n\n{balance}",
+  "ch_add_steps": "📢 <b>Kanal ulash — 3 qadam</b>\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBekor qilish: /cancel",
+  "ch_added": "📢 <b>Kanal ulandi!</b>\n\n• {title} (@{username})\n• Bot admin huquqi: tasdiqlangan ✅",
+  "ch_added_bonus": "\n\n🎁 Kanal ulaganingiz uchun <b>+{bonus} kredit</b> sovg‘a!\n💰 Balans: {bal} kredit",
+  "verify_none": "Tekshiradigan vazifangiz yo‘q.\n\nAvval “📋 Vazifalar” tugmasini bosing.",
+  "verify_ok": "✅ <b>Tekshirildi!</b>\n\n• Tasdiqlandi: <b>{ok} ta</b>\n• Mukofot: <b>+{reward} kredit</b>\n• Hozirgi balans: <b>{bal} kredit</b>",
+  "choose_menu": "Kerakli amalni pastdagi menyudan tanlang.",
+  "cancelled": "Bekor qilindi.",
+  "lang_saved": "✅ Til o‘zgartirildi.",
+  "ord_fifo_short": "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)"
+});
+Object.assign(STR.ru, {
+  "paused": "⏸ Задания временно приостановлены. Попробуйте позже.",
+  "ig_off": "📸 Раздел Instagram пока отключён.",
+  "ig_note": "⚠️ В Instagram подтверждение основано на вашем слове — проверяет администратор.",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nЗаказано: {req}\n✅ Подтверждено: {ver}\n👥 Активные: {act}\n➖ Отписались: {unsub}\n⏳ В ожидании: {pend}\n\n🔑 Контроллеры: {ctl}\n⚠️ Обращения: {cmp}\n\n🛒 <b>История заказов:</b>\n{hist}\n\n{balance}",
+  "ch_add_steps": "📢 <b>Добавление канала — 3 шага</b>\n\n1. Сделайте бота <b>администратором</b>\n2. Отправьте адрес канала, например: <code>@moy_kanal</code>\n3. Бот проверит и добавит\n\nОтмена: /cancel",
+  "ch_added": "📢 <b>Канал добавлен!</b>\n\n• {title} (@{username})\n• Права администратора: подтверждены ✅",
+  "ch_added_bonus": "\n\n🎁 За добавление канала <b>+{bonus} кредитов</b>!\n💰 Баланс: {bal}",
+  "verify_none": "Нет заданий для проверки.\n\nСначала нажмите “📋 Задания”.",
+  "verify_ok": "✅ <b>Проверено!</b>\n\n• Подтверждено: <b>{ok}</b>\n• Награда: <b>+{reward} кредитов</b>\n• Баланс: <b>{bal}</b>",
+  "choose_menu": "Выберите действие в меню ниже.",
+  "cancelled": "Отменено.",
+  "lang_saved": "✅ Язык изменён.",
+  "ord_fifo_short": "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)"
+});
+Object.assign(STR.en, {
+  "paused": "⏸ Tasks are temporarily paused. Try later.",
+  "ig_off": "📸 The Instagram module is currently off.",
+  "ig_note": "⚠️ Instagram confirmation is based on your word — reviewed by an admin.",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nRequested: {req}\n✅ Verified: {ver}\n👥 Active: {act}\n➖ Unsubscribed: {unsub}\n⏳ Pending: {pend}\n\n🔑 Controllers: {ctl}\n⚠️ Complaints: {cmp}\n\n🛒 <b>Order history:</b>\n{hist}\n\n{balance}",
+  "ch_add_steps": "📢 <b>Add a channel — 3 steps</b>\n\n1. Make the bot an <b>administrator</b>\n2. Send the channel address, e.g. <code>@my_channel</code>\n3. The bot verifies and adds it\n\nCancel: /cancel",
+  "ch_added": "📢 <b>Channel added!</b>\n\n• {title} (@{username})\n• Admin rights: verified ✅",
+  "ch_added_bonus": "\n\n🎁 <b>+{bonus} credits</b> for linking your channel!\n💰 Balance: {bal}",
+  "verify_none": "No tasks to check.\n\nPress “📋 Tasks” first.",
+  "verify_ok": "✅ <b>Checked!</b>\n\n• Verified: <b>{ok}</b>\n• Reward: <b>+{reward} credits</b>\n• Balance: <b>{bal}</b>",
+  "choose_menu": "Choose an action from the menu below.",
+  "cancelled": "Cancelled.",
+  "lang_saved": "✅ Language changed.",
+  "ord_fifo_short": "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)"
+});
+
+var MENU = menuFor({ language: "uz" });
+var MENU_LABELS = new Set(Object.keys(LABEL2KEY));
+
 var inline = (rows) => ({ reply_markup: { inline_keyboard: rows } });
 var userById = (id) => db.users[id.replace(/^u-/, "")];
 function getUser(from, chatId) {
@@ -373,7 +587,7 @@ function getUser(from, chatId) {
       telegramId: from.id,
       username: from.username,
       displayName: [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || String(from.id),
-      language: "uz",
+      language: ["uz", "ru", "en"].includes(String(from.language_code || "").slice(0, 2)) ? String(from.language_code).slice(0, 2) : "uz",
       credits: { available: bonus, reserved: 0, spent: 0, refunded: 0, verifiedRewards: 0, selfReportedRewards: 0, signupBonus: bonus },
       registeredAt: nowStr(),
       referralCode: `REF_${from.id}`,
@@ -573,7 +787,7 @@ function allocateRefBonus(referrer, ref, ch) {
 }
 async function verifyBatch(u, platform, chat) {
   const batch = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
-  if (!batch.length) return send(chat, "Tekshiradigan vazifangiz yo‘q.\n\nAvval “📋 Vazifalar” tugmasini bosing.", MENU);
+  if (!batch.length) return send(chat, T(u, "verify_none"), menuFor(u));
   const lookup = {};
   if (platform === "telegram") {
     await Promise.all(batch.map(async (t) => {
@@ -604,11 +818,7 @@ async function verifyBatch(u, platform, chat) {
   if (firstTg) tryQualifyReferral(u);
   save();
   const notDone = out.deferredTasks.filter((t) => t.status === "PENDING");
-  let text = `✅ <b>Tekshirildi!</b>
-
-• Tasdiqlandi: <b>${out.verifiedTasks.length} ta</b>
-• Mukofot: <b>+${earned} kredit</b>
-• Hozirgi balans: <b>${u.credits.available} kredit</b>`;
+  let text = T(u, "verify_ok", { ok: out.verifiedTasks.length, reward: earned, bal: u.credits.available });
   if (notDone.length) text += `
 
 ⏳ <b>Hali obuna bo‘lmaganlar (${notDone.length} ta):</b>
@@ -618,100 +828,83 @@ Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
   if (out.apiErrorTasks.length) text += `
 
 ⚠️ ${out.apiErrorTasks.length} ta kanalni hozir tekshirib bo‘lmadi (Telegram’ning o‘zida xato). Sizda ayb yo‘q — keyinroq o‘zi qayta tekshiriladi.`;
-  await send(chat, text, MENU);
+  await send(chat, text, menuFor(u));
   if (!notDone.length && !out.apiErrorTasks.length) await showTasks(u, platform, chat);
 }
 function balanceLine(u) {
-  return `💰 Balans: <b>${u.credits.available}</b> kredit  •  🔒 Band: ${u.credits.reserved} kredit`;
+  return T(u, "bal", { a: u.credits.available, r: u.credits.reserved });
 }
 async function showTasks(u, platform, chat) {
-  if (platform === "telegram" && S().isTelegramPaused) return send(chat, "⏸ Telegram vazifalari vaqtincha to‘xtatilgan. Keyinroq urinib ko‘ring.", MENU);
-  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", MENU);
+  if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
+  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
   const batch = getBatch(u, platform);
-  if (!batch.length) return send(chat, `📋 <b>Hozircha vazifa yo‘q</b>
-
-Buning sababi: hozir hech kim obunachi buyurtma qilmagan, ya’ni obuna bo‘ladigan kanal yo‘q. Keyinroq yana shu tugmani bosing.
-
-${balanceLine(u)}`, MENU);
+  if (!batch.length) return send(chat, T(u, "tasks_none", { balance: balanceLine(u) }), menuFor(u));
   const reward = batch[0].rewardCredits;
-  const text = `📋 <b>Vazifalar: ${batch.length} ta kanal</b>
-
-Qanday bajariladi:
-1. Quyidagi havolalardan kanalga kiring
-2. ${platform === "telegram" ? "Obuna bo‘ling" : "Follow qiling"}
-3. Pastdagi <b>“✅ Obuna bo‘ldim”</b> tugmasini bosing — bot o‘zi tekshiradi
-
-Muammo bo‘lsa: kanal yonidagi <b>⚠️N</b> tugmasi orqali shikoyat yuboring.
-
-Har bir obuna uchun: <b>+${reward} kredit</b>
-
-` + batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") + (platform === "instagram" ? "\n\n⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi." : "");
+  const text = T(u, "tasks_title", { n: batch.length, reward }) +
+    batch.map((t, i) => `${i + 1}. ${esc(t.destinationTitle)}${t.isDeferred ? " 🔁" : ""}`).join("\n") +
+    (platform === "instagram" ? "\n\n" + T(u, "ig_note") : "");
   const rows = batch.map((t, i) => [{ text: `🔗 ${i + 1}. ${t.destinationTitle}`.slice(0, 60), url: t.destinationUrl }]);
-  // Har bir vazifa uchun alohida shikoyat tugmasi (spec §7)
   if (platform === "telegram") {
     const cmpBtns = batch.map((t, i) => ({ text: `⚠️${i + 1}`, callback_data: `cmpd:${t.id}` }));
     for (let i = 0; i < cmpBtns.length; i += 5) rows.push(cmpBtns.slice(i, i + 5));
   }
-  rows.push([{ text: platform === "telegram" ? "✅ Obuna bo‘ldim" : "✅ Bajardim", callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
-  rows.push([{ text: "🔄 Yangilash", callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
+  rows.push([{ text: T(u, "tasks_btn_done"), callback_data: `verify:${platform === "telegram" ? "tg" : "ig"}` }]);
+  rows.push([{ text: T(u, "tasks_btn_refresh"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }]);
   return send(chat, text, inline(rows));
 }
 var channelsOf = (u) => db.channels.filter((c) => c.ownerId === u.id || c.controllers.some((k) => k.userId === u.id));
 async function showChannels(u, chat) {
   const chs = channelsOf(u);
-  const text = `📢 <b>Kanallaringiz: ${chs.length} ta</b>
-
-` + (chs.length ? chs.map((c) => `• <b>${esc(c.title)}</b> (@${esc(c.username)})\n   obunachi: ${c.verifiedSubscribers} ta keldi • ${c.pendingSubscriptions} ta kutilmoqda${c.ownerId !== u.id ? " (nazoratchi)" : ""}`).join("\n") : `Hali kanal ulanmagan. Ulash uchun:
-1. Botni kanalingizga <b>administrator</b> qiling
-2. “➕ Kanal qo‘shish” tugmasini bosing
-3. Kanal manzilini yuboring (masalan: @kanal_nomi)
-
-Birinchi marta ulaganingizda <b>+10 kredit</b> sovg‘a olasiz.`) + `
-
-${balanceLine(u)}`;
+  const list = chs.length
+    ? chs.map((c) => `• <b>${esc(c.title)}</b> (@${esc(c.username)})\n   ✅ ${c.verifiedSubscribers} • ⏳ ${c.pendingSubscriptions}${c.ownerId !== u.id ? " (" + T(u, "ch_controller") + ")" : ""}`).join("\n")
+    : T(u, "ch_none");
   const rows = chs.map((c) => [
     { text: `📢 ${c.title}`.slice(0, 32), callback_data: `chd:${c.id}` },
     { text: "🛒", callback_data: `ord:${c.id}` }
   ]);
-  rows.push([{ text: "➕ Kanal qo‘shish", callback_data: "chadd" }, { text: "🔑 Kod kiritish", callback_data: "ctlin" }]);
-  return send(chat, text, inline(rows));
+  rows.push([{ text: T(u, "ch_add"), callback_data: "chadd" }, { text: T(u, "ch_code_in"), callback_data: "ctlin" }]);
+  return send(chat, T(u, "ch_title", { n: chs.length, list, balance: balanceLine(u) }), inline(rows));
 }
 // Kanal statistikasi sahifasi (spec §6): obunachi holatlari, buyurtma tarixi,
 // shikoyatlar va nazoratchilar bir joyda.
 async function showChannelDetail(u, ch, chat) {
   const os = db.orders.filter((o) => o.destinationId === ch.id).slice(-5).reverse();
   const cmps = db.complaints.filter((c) => c.destinationId === ch.id);
-  const ctl = (ch.controllers || []).map((k) => esc(k.displayName)).join(", ");
-  const text = `📢 <b>${esc(ch.title)}</b>\n@${esc(ch.username)}\n🆔 <code>${esc(ch.channelId)}</code>\n\n` +
-    `So‘ralgan obunachi: ${ch.totalRequested} ta\n` +
-    `✅ Tasdiqlangan: ${ch.verifiedSubscribers} ta\n` +
-    `👥 Faol obunachi: ${ch.activeSubscribers} ta\n` +
-    `➖ Chiqib ketgan: ${ch.unsubscribedCount} ta\n` +
-    `⏳ Kutilmoqda: ${ch.pendingSubscriptions} ta\n\n` +
-    `🔑 Nazoratchilar: ${ctl || "yo‘q"}\n` +
-    `⚠️ Shikoyatlar: ${cmps.length} ta\n\n` +
-    `🛒 <b>Buyurtma tarixi (oxirgi ${os.length} ta):</b>\n` +
-    (os.length ? os.map((o) => `• ${o.requestedQuantity} ta — ${o.verifiedQuantity} bajarildi • ${o.status === "active" ? "🟢 davom etyapti" : o.status === "completed" ? "✅ tugagan" : "⛔ bekor"}`).join("\n") : "• Hali buyurtma yo‘q") +
-    `\n\n${balanceLine(u)}`;
-  const rows = [[{ text: "🛒 Buyurtma berish", callback_data: `ord:${ch.id}` }]];
+  const hist = os.length
+    ? os.map((o) => `• ${o.requestedQuantity} — ${o.verifiedQuantity} • ${o.status === "active" ? "🟢" : o.status === "completed" ? "✅" : "⛔"}`).join("\n")
+    : "—";
+  const text = T(u, "ch_detail", {
+    title: esc(ch.title),
+    username: esc(ch.username),
+    cid: esc(ch.channelId),
+    req: ch.totalRequested,
+    ver: ch.verifiedSubscribers,
+    act: ch.activeSubscribers,
+    unsub: ch.unsubscribedCount,
+    pend: ch.pendingSubscriptions,
+    ctl: (ch.controllers || []).map((k) => esc(k.displayName)).join(", ") || "—",
+    cmp: cmps.length,
+    hist,
+    balance: balanceLine(u)
+  });
+  const rows = [[{ text: T(u, "ch_buy"), callback_data: `ord:${ch.id}` }]];
   if (ch.ownerId === u.id) {
-    rows.push([{ text: "🔑 Kod berish", callback_data: `ctl:${ch.id}` }, { text: "🗑 Kanalni uzish", callback_data: `chdel:${ch.id}` }]);
+    rows.push([{ text: T(u, "ch_code_in"), callback_data: `ctl:${ch.id}` }, { text: T(u, "ch_unlink"), callback_data: `chdel:${ch.id}` }]);
   }
-  rows.push([{ text: "⬅️ Orqaga", callback_data: "chs:0" }]);
+  rows.push([{ text: T(u, "ch_back"), callback_data: "chs:0" }]);
   return send(chat, text, inline(rows));
 }
 async function showOrders(u, chat) {
-  const os = db.orders.filter((o) => o.userId === u.id).slice(-10).reverse();
-  const text = `🛒 <b>Buyurtmalaringiz: ${db.orders.filter((o) => o.userId === u.id).length} ta</b>
-${balanceLine(u)}
-
-` + (os.length ? os.map((o) => `${o.platform === "telegram" ? "📢" : "📸"} <b>${esc(o.destinationTitle)}</b>
-   keldi: ${o.verifiedQuantity} / ${o.requestedQuantity} ta • ${o.status === "active" ? "🟢 davom etyapti" : o.status === "completed" ? "✅ tugagan" : "⛔ bekor qilingan"} • ${o.totalCost} kredit`).join("\n\n") : "Hali buyurtma bermagansiz.\n\n“📢 Kanallarim” → kanalingizni tanlang → nechta obunachi kerakligini yozing.");
-  const rows = os.filter((o) => o.status === "active").map((o) => [{ text: `❌ Bekor qilish: ${o.destinationTitle}`.slice(0, 45), callback_data: `cx:${o.id}` }]);
-  return send(chat, text, rows.length ? inline(rows) : MENU);
+  const all = db.orders.filter((o) => o.userId === u.id);
+  const os = all.slice(-10).reverse();
+  const list = os.length
+    ? os.map((o) => `${o.platform === "telegram" ? "📢" : "📸"} <b>${esc(o.destinationTitle)}</b> — ${o.verifiedQuantity}/${o.requestedQuantity} • ${o.status === "active" ? "🟢" : o.status === "completed" ? "✅" : "⛔"} • ${o.totalCost} 💰`).join("\n")
+    : T(u, "ord_none");
+  const rows = os.filter((o) => o.status === "active").map((o) => [{ text: `❌ ${o.destinationTitle}`.slice(0, 45), callback_data: `cx:${o.id}` }]);
+  return send(chat, T(u, "ord_title", { n: all.length, balance: balanceLine(u), list }), rows.length ? inline(rows) : menuFor(u));
 }
 async function showInstagram(u, chat) {
-  if (!S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", MENU);
+  if (!S().isInstagramEnabled) return send(chat, "📸 Instagram bo‘limi hozircha o‘chirilgan.", menuFor(u));
   const ps = db.igProfiles.filter((p) => p.userId === u.id);
   const text = `📸 <b>Instagram</b>
 
@@ -731,99 +924,54 @@ async function showReferrals(u, chat) {
   const waiting = refs.filter((r) => !r.bonusIssued && r.bonusAmount > 0);
   const chs = channelsOf(u);
   const rows = [];
-  if (waiting.length && chs.length) {
-    rows.push([{ text: "🎁 Bonusni kanalga yo‘naltirish", callback_data: `refa:${waiting[0].id}|${chs[0].id}` }]);
-  }
-  const text = `👥 <b>Referal tizimi</b>
-
-Do‘stingizni taklif qiling. U shu botga kirib <b>kamida bitta vazifani</b> bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> referal bonusi beriladi.
-
-Bonus kanalingizga <b>obunachi</b> sifatida yo‘naltiriladi: 1 obunachi = ${S().creditRewardTelegram} kredit.
-
-Taklif qilganlar: ${refs.length} ta • Yo‘naltirilgan bonuslar: ${paid} ta` +
-    (pendingAmount > 0 ? `\n\n🎁 Yo‘naltirilmagan bonus: <b>${pendingAmount} kredit</b>${chs.length ? " — quyidagi tugma bilan kanalni tanlang." : " — avval kanal ulang."}` : "") +
-    `\n\n🔗 Sizning havolangiz:
-https://t.me/${S().botUsername}?start=${u.referralCode}
-
-Shu havolani do‘stlaringizga yuboring.`;
-  return send(chat, text, rows.length ? inline(rows) : MENU);
+  if (waiting.length && chs.length) rows.push([{ text: T(u, "ref_alloc"), callback_data: `refa:${waiting[0].id}|${chs[0].id}` }]);
+  const text = T(u, "ref_title", {
+    reward: S().creditRewardReferral,
+    unit: S().creditRewardTelegram,
+    n: refs.length,
+    paid,
+    pending: pendingAmount > 0 ? T(u, "ref_pending", { amount: pendingAmount, hint: chs.length ? "" : " — " + T(u, "ch_none").split("\n")[0] }) : "",
+    bot: S().botUsername,
+    code: u.referralCode
+  });
+  return send(chat, text, rows.length ? inline(rows) : menuFor(u));
 }
 async function showStats(u, chat) {
   const c = u.credits;
-  return send(chat, `📊 <b>Statistika</b>
-
-👤 ${esc(u.displayName)}
-🆔 ${u.telegramId}
-
-💰 Balans: <b>${c.available}</b> kredit — hozir ishlatsa bo‘ladigan kredit
-🔒 Band: ${c.reserved} kredit — faol buyurtmaga band qilingan
-💸 Sarflangan: ${c.spent} kredit
-↩️ Qaytarilgan: ${c.refunded} kredit
-✅ Bajarilgan vazifalar: ${u.completedTasksCount} ta
-📢 Kanallar: ${channelsOf(u).length} ta
-🛒 Faol buyurtmalar: ${db.orders.filter((o) => o.userId === u.id && o.status === "active").length} ta`, MENU);
+  return send(chat, T(u, "stats_title", {
+    name: esc(u.displayName),
+    id: u.telegramId,
+    a: c.available,
+    r: c.reserved,
+    s: c.spent,
+    ref: c.refunded,
+    done: u.completedTasksCount,
+    ch: channelsOf(u).length,
+    ord: db.orders.filter((o) => o.userId === u.id && o.status === "active").length
+  }), menuFor(u));
 }
-async function showHelp(chat) {
-  const text = `🛟 <b>Yordam — botning to‘liq qo‘llanmasi</b>
-
-<b>Bu bot nima qiladi?</b>
-Bot kanallarga obunachi yig‘ishga yordam beradi. Siz boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz, keyin shu kredit bilan o‘z kanalingizga obunachi yig‘asiz. Bu yerda pul ishlatilmaydi.
-
-<b>Kredit nima?</b>
-Kredit — bot ichidagi hisob birligi. 1 obunachi = ${S().creditRewardTelegram} kredit. Kreditni naqd pulga aylantirib bo‘lmaydi.
-
-<b>Pastdagi tugmalar nima qiladi:</b>
-
-📋 <b>Vazifalar</b> — obuna bo‘lish uchun kanallar ro‘yxati. Har biriga obuna bo‘lib “✅ Obuna bo‘ldim” tugmasini bosing. Har biri uchun +${S().creditRewardTelegram} kredit.
-
-📢 <b>Kanallarim</b> — o‘z kanalingizni ulash va unga obunachi buyurtish. Ichida: “➕ Kanal qo‘shish” (yangi kanal ulash), kanal nomi (buyurtma berish), “🔑 Kod” (kanalingizga yordamchi qo‘shish uchun bir martalik kod).
-
-🛒 <b>Buyurtmalarim</b> — bergan buyurtmalaringiz va ularning holati. Bekor qilsangiz, bajarilmagan qismining krediti qaytadi.
-
-📸 <b>Instagram</b> — Instagram profilini ulash bo‘limi (hozircha o‘chirilgan).
-
-👥 <b>Referal tizimi</b> — taklif havolangiz. Do‘stingiz shu havola bilan kirib bitta vazifa bajarsa, sizga +${S().creditRewardReferral} kredit.
-
-📊 <b>Statistika</b> — balans, sarflangan kredit, bajarilgan vazifalar soni, kanallar soni.
-
-🛟 <b>Yordam</b> — shu qo‘llanma va admin bilan bog‘lanish.
-
-⚙️ <b>Sozlamalar</b> — soatlik hisobotni yoqish yoki o‘chirish.
-
-<b>Muhim qoidalar:</b>
-• Obuna haqiqiy tekshiriladi — obuna bo‘lmasangiz kredit berilmaydi.
-• Obunadan chiqsangiz, kredit qaytarib olinadi.
-• Soxta harakat qilsangiz hisob bloklanadi.
-• Kanal ulash uchun bot o‘sha kanalda administrator bo‘lishi shart.
-• Kanal ulash bonusi (+${S().creditRewardChannelLink} kredit) faqat bir marta beriladi.
-
-Savolingiz yoki muammoingiz bo‘lsa — pastdagi <b>“📝 Shikoyat yuborish”</b> tugmasini bosing, admin javob beradi.`;
-  return send(chat, text, inline([
-    [{ text: "📋 Vazifalarga o‘tish", callback_data: "tasks:tg" }],
-    [{ text: "📝 Shikoyat yuborish", callback_data: "cmp:new" }]
+async function showHelp(u, chat) {
+  return send(chat, T(u, "help"), inline([
+    [{ text: T(u, "tasks_btn_refresh"), callback_data: "tasks:tg" }],
+    [{ text: "📝", callback_data: "cmp:new" }]
   ]));
-}
-function notifOn(u, key) {
-  const n = u.notif || {};
-  return n[key] !== false;
 }
 async function showSettings(u, chat) {
   const mark = (ok) => (ok ? "✅" : "⛔");
-  return send(chat, `⚙️ <b>Sozlamalar</b>
-
-Til: 🇺🇿 O‘zbekcha
-
-🔔 <b>Bildirishnomalar</b>
-Soatlik hisobot: ${u.notifications ? "✅ yoqilgan" : "⛔ o‘chirilgan"}
-• Yangi obunachilar: ${mark(notifOn(u, "subscribers"))}
-• Referal bonuslar: ${mark(notifOn(u, "referrals"))}
-• Buyurtma holati: ${mark(notifOn(u, "orders"))}
-• Texnik xabarlar: ${mark(notifOn(u, "technical"))}
-
-Kerakli bo‘limni bosing — yoqiladi yoki o‘chadi.`, inline([
-    [{ text: u.notifications ? "🔕 Hisobotni o‘chirish" : "🔔 Hisobotni yoqish", callback_data: "notif" }],
-    [{ text: `Obunachilar ${mark(notifOn(u, "subscribers"))}`, callback_data: "nt:subscribers" }, { text: `Referal ${mark(notifOn(u, "referrals"))}`, callback_data: "nt:referrals" }],
-    [{ text: `Buyurtma ${mark(notifOn(u, "orders"))}`, callback_data: "nt:orders" }, { text: `Texnik ${mark(notifOn(u, "technical"))}`, callback_data: "nt:technical" }]
+  const langName = { uz: "🇺🇿 O‘zbekcha", ru: "🇷🇺 Русский", en: "🇬🇧 English" }[langOf(u)];
+  return send(chat, T(u, "set_title", {
+    lang: langName,
+    hourly: u.notifications ? "✅" : "⛔",
+    sub: mark(notifOn(u, "subscribers")),
+    ref: mark(notifOn(u, "referrals")),
+    ord: mark(notifOn(u, "orders")),
+    tech: mark(notifOn(u, "technical"))
+  }), inline([
+    [{ text: T(u, "langs"), callback_data: "noop:0" }],
+    [{ text: "🇺🇿 O‘zbekcha", callback_data: "lang:uz" }, { text: "🇷🇺 Русский", callback_data: "lang:ru" }, { text: "🇬🇧 English", callback_data: "lang:en" }],
+    [{ text: u.notifications ? T(u, "set_hourly_on") : T(u, "set_hourly_off"), callback_data: "notif" }],
+    [{ text: `${T(u, "b_tasks").slice(2)} ${mark(notifOn(u, "subscribers"))}`, callback_data: "nt:subscribers" }, { text: `Ref ${mark(notifOn(u, "referrals"))}`, callback_data: "nt:referrals" }],
+    [{ text: `Order ${mark(notifOn(u, "orders"))}`, callback_data: "nt:orders" }, { text: `Tech ${mark(notifOn(u, "technical"))}`, callback_data: "nt:technical" }]
   ]));
 }
 var CATEGORIES = [
@@ -852,29 +1000,35 @@ async function sponsorGate(u, chat) {
 // tasdiqlangandan keyingina kredit band qilinadi.
 async function prepareOrder(u, destId, qty, chat) {
   const dest = destOf(destId);
-  if (!dest) return send(chat, "Manzil topilmadi.", MENU);
+  if (!dest) return send(chat, T(u, "choose_menu"), menuFor(u));
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
-  if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", MENU);
-  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", MENU);
-  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Miqdor 10 dan 10000 gacha butun son bo\u2018lishi kerak. Qayta kiriting:");
+  if (S().areOrdersFrozen) return send(chat, "❄️", menuFor(u));
+  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
+  if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, T(u, "ord_qty", { title: "10–10000", unit: 0, balance: "", max: "—" }));
   const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
-    return send(chat, `\u274C Kredit yetmayapti.\n\nKerak: ${chk.totalCost} kredit\nSizda: ${u.credits.available} kredit\nYetmayapti: ${chk.shortage} kredit\n\n\u{1F4CB} Vazifalarni bajarib kredit to\u2018plang.`, MENU);
+    return send(chat, T(u, "ord_short", { need: chk.totalCost, have: u.credits.available, lack: chk.shortage }), menuFor(u));
   }
   u.state = { type: "order_confirm", destId, qty, platform, unit };
-  const title = platform === "telegram" ? dest.title : "@" + dest.username;
-  return send(chat, `\u{1F4DD} <b>Buyurtma xulosasi</b>\n\n\u2022 ${platform === "telegram" ? "\u{1F4E2}" : "\u{1F4F8}"} ${esc(title)}\n\u2022 Miqdor: <b>${qty}</b> ta ${platform === "telegram" ? "obunachi" : "follower"}\n\u2022 Narx: ${unit} kredit \xD7 ${qty} = <b>${chk.totalCost}</b> kredit\n\u2022 Buyurtmadan keyingi balans: ${u.credits.available - chk.totalCost} kredit\n\nTasdiqlasangiz kredit band qilinadi, obunachilar navbat bilan qo\u2018shiladi.`, inline([
-    [{ text: "\u2705 Tasdiqlash", callback_data: "ordok:1" }, { text: "\u274C Bekor qilish", callback_data: "ordno:0" }]
+  const title = esc(platform === "telegram" ? dest.title : "@" + dest.username);
+  return send(chat, T(u, "ord_summary", {
+    title,
+    qty,
+    unit,
+    total: chk.totalCost,
+    left: u.credits.available - chk.totalCost
+  }), inline([
+    [{ text: T(u, "ord_yes"), callback_data: "ordok:1" }, { text: T(u, "ord_no"), callback_data: "ordno:0" }]
   ]));
 }
 async function createOrderConfirmed(u, destId, qty, chat) {
   const dest = destOf(destId);
-  if (!dest) return send(chat, "Manzil topilmadi.", MENU);
+  if (!dest) return send(chat, "Manzil topilmadi.", menuFor(u));
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
-  if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", MENU);
-  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", MENU);
+  if (S().areOrdersFrozen) return send(chat, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan.", menuFor(u));
+  if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", menuFor(u));
   if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:");
   const unit = platform === "telegram" ? S().creditRewardTelegram : S().creditRewardInstagram;
   const chk = calculateOrderAffordability(u.credits, qty, unit);
@@ -886,7 +1040,7 @@ Kerak: ${chk.totalCost} kredit
 Sizda: ${u.credits.available} kredit
 Yetmayapti: ${chk.shortage} kredit
 
-Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har bir obuna uchun ${S().creditRewardTelegram} kredit beriladi.`, MENU);
+Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har bir obuna uchun ${S().creditRewardTelegram} kredit beriladi.`, menuFor(u));
   }
   u.credits.available -= chk.totalCost;
   u.credits.reserved += chk.totalCost;
@@ -911,20 +1065,14 @@ Kredit ishlash uchun \u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing \u2014 har
   };
   db.orders.push(o);
   platform === "telegram" ? (dest.totalRequested += qty, dest.pendingSubscriptions += qty) : (dest.totalRequested += qty, dest.pendingFollowers += qty);
-  addTx(u, -chk.totalCost, "order_spend", `Buyurtma band qilindi: ${o.destinationTitle} \xD7 ${qty}`, { orderId: o.id });
+  addTx(u, -chk.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id });
   u.state = null;
   save();
-  return send(chat, `\u{1F6D2} <b>Buyurtma qabul qilindi!</b>
-
-\u2022 Kanal: ${esc(o.destinationTitle)}
-\u2022 Soni: ${qty} ta obunachi
-\u2022 Narxi: ${chk.totalCost} kredit (hisobingizda band qilindi)
-
-Obunachilar navbat bilan qo\u2018shiladi. Holatini \u201C\u{1F6D2} Buyurtmalarim\u201D da ko\u2018rasiz.`, MENU);
+  return send(chat, T(u, "ord_created", { title: esc(o.destinationTitle), qty, total: chk.totalCost }), menuFor(u));
 }
 async function cancelOrder(u, orderId, chat) {
   const o = db.orders.find((x) => x.id === orderId && x.userId === u.id);
-  if (!o || o.status !== "active") return send(chat, "Buyurtma topilmadi yoki allaqachon yopilgan.", MENU);
+  if (!o || o.status !== "active") return send(chat, "Buyurtma topilmadi yoki allaqachon yopilgan.", menuFor(u));
   const { refundableUnits, refundCredits } = calculateRefundAmount(o);
   o.cancelledQuantity += refundableUnits;
   o.pendingQuantity = 0;
@@ -945,7 +1093,7 @@ async function cancelOrder(u, orderId, chat) {
   return send(chat, `\u21A9\uFE0F <b>Buyurtma bekor qilindi</b>
 
 Kelgan obunachilar saqlanadi (${o.verifiedQuantity} ta), bajarilmagan ${refundableUnits} ta uchun <b>${refundCredits} kredit</b> qaytarildi.
-${balanceLine(u)}`, MENU);
+${balanceLine(u)}`, menuFor(u));
 }
 async function addChannel(u, text, chat) {
   const uname = text.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
@@ -960,7 +1108,7 @@ async function addChannel(u, text, chat) {
   const existing = db.channels.find((c) => c.channelId === String(ch.id));
   if (existing) {
     u.state = null;
-    return send(chat, existing.ownerId === u.id ? "Bu kanal allaqachon ulangan \u2014 qayta ulash shart emas." : "\u274C Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, \u201C\u{1F511} Kod kiritish\u201D orqali nazoratchi bo\u2018lasiz.", MENU);
+    return send(chat, existing.ownerId === u.id ? "Bu kanal allaqachon ulangan \u2014 qayta ulash shart emas." : "\u274C Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, \u201C\u{1F511} Kod kiritish\u201D orqali nazoratchi bo\u2018lasiz.", menuFor(u));
   }
   db.channels.push({
     id: nid("ch"),
@@ -984,20 +1132,13 @@ async function addChannel(u, text, chat) {
   if (linkBonus > 0) {
     u.channelBonusGiven = true;
     u.credits.available += linkBonus;
-    addTx(u, linkBonus, "channel_link_bonus", `Kanal ulandi: ${ch.title}`);
+    addTx(u, linkBonus, "channel_link_bonus", "Kanal ulandi: " + ch.title);
   }
   u.state = null;
   save();
-  return send(chat, `\u{1F4E2} <b>Kanal ulandi!</b>
-
-\u2022 ${esc(ch.title)} (@${esc(ch.username || uname)})
-\u2022 Bot kanalda administrator \u2014 tasdiqlandi \u2705
-\nEndi \u201C\u{1F6D2} Buyurtmalarim\u201D emas, \u201C\u{1F4E2} Kanallarim\u201D dan kanalingizni tanlab obunachi buyurtib berishingiz mumkin.` +
-    (linkBonus > 0
-      ? `
-\u{1F381} Kanal ulaganingiz uchun <b>+${linkBonus} kredit</b> sovg'a!\n${balanceLine(u)}`
-      : `
-${balanceLine(u)}`), MENU);
+  const head = T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) });
+  const tail = linkBonus > 0 ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "";
+  return send(chat, head + tail, menuFor(u));
 }
 var BOT_ID = 0;
 async function checkBotAdmin(chatId) {
@@ -1013,7 +1154,7 @@ async function addInstagram(u, text, chat) {
   const username = m[1];
   if (db.igProfiles.some((p) => p.username.toLowerCase() === username.toLowerCase())) {
     u.state = null;
-    return send(chat, "Bu profil allaqachon ulangan.", MENU);
+    return send(chat, "Bu profil allaqachon ulangan.", menuFor(u));
   }
   db.igProfiles.push({
     id: nid("ig"),
@@ -1030,7 +1171,7 @@ async function addInstagram(u, text, chat) {
   });
   u.state = null;
   save();
-  return send(chat, `\u{1F4F8} @${esc(username)} qo\u2018shildi.`, MENU);
+  return send(chat, `\u{1F4F8} @${esc(username)} qo\u2018shildi.`, menuFor(u));
 }
 async function submitComplaint(u, category, desc, chat) {
   const ticketId = `TICKET-${Math.floor(1e3 + Math.random() * 9e3)}`;
@@ -1057,9 +1198,7 @@ ${esc(category)}
 ${esc(desc.slice(0, 500))}
 
 Javob: <code>/reply ${ticketId} matn</code>`);
-  return send(chat, `\u{1F6DF} Murojaat qabul qilindi!
-Bilet: <b>${ticketId}</b>
-Adminlar tez orada javob beradi.`, MENU);
+  return send(chat, T(u, "cmp_ok", { ticket: ticketId }), menuFor(u));
 }
 async function enterControllerCode(u, code, chat) {
   u.state = null;
@@ -1074,38 +1213,19 @@ async function enterControllerCode(u, code, chat) {
       ch.controllers.push({ userId: u.id, displayName: u.displayName, telegramId: u.telegramId, role: "controller", addedAt: nowStr() });
       save();
       notify(userById(ch.ownerId), `\u{1F511} ${esc(u.displayName)} <b>${esc(ch.title)}</b> kanaliga nazoratchi sifatida qo\u2018shildi.`);
-      return send(chat, `\u2705 Kod tasdiqlandi! Siz <b>${esc(ch.title)}</b> kanalida nazoratchisiz.`, MENU);
+      return send(chat, `\u2705 Kod tasdiqlandi! Siz <b>${esc(ch.title)}</b> kanalida nazoratchisiz.`, menuFor(u));
     }
     if (v.reason && !/noto‘g‘ri/.test(v.reason)) lastReason = v.reason;
   }
-  return send(chat, `\u274C ${lastReason}`, MENU);
+  return send(chat, `\u274C ${lastReason}`, menuFor(u));
 }
 function guideText(u) {
   const bonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
-  const per = S().creditRewardTelegram;
-  return `📖 <b>Bot qanday ishlaydi</b>
-
-Bot ikki ish uchun kerak:
-1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz
-2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz
-
-💰 <b>Kredit nima?</b> — bu bot ichidagi hisob birligi. 1 obunachi = ${per} kredit. Pul emas, naqd qilib bo‘lmaydi.
-
-1️⃣ <b>Kredit ishlash</b>
-“📋 Vazifalar” tugmasini bosing → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim” tugmasini bosing. Bot obunani o‘zi tekshiradi va har biri uchun <b>+${per} kredit</b> beradi.
-
-2️⃣ <b>Kanalingizni ulash</b>
-Avval botni kanalingizga <b>administrator</b> qiling. Keyin “📢 Kanallarim” → “➕ Kanal qo‘shish” → kanal manzilini yuboring.
-${bonus > 0 ? `Birinchi marta ulaganingizda <b>+${bonus} kredit</b> sovg‘a oladi.\n` : ""}
-3️⃣ <b>Obunachi buyurtish</b>
-“📢 Kanallarim” dan kanalingizni tanlang va nechta obunachi kerakligini yozing. Kredit darhol band qilinadi, obunachilar navbat bilan qo‘shiladi.
-
-4️⃣ <b>Referal</b>
-“👥 Referal tizimi” da shaxsiy havolangiz bor. Do‘stingiz shu havola bilan kirib bitta vazifa bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b> beriladi.
-
-❓ Har bir tugma nima qilishini bilish uchun “🛟 Yordam” tugmasini bosing.
-
-Pastdagi menyudan boshlang ↓`;
+  return T(u, "guide", {
+    per: S().creditRewardTelegram,
+    ref: S().creditRewardReferral,
+    bonus: bonus > 0 ? T(u, "bonus_line", { bonus }) : ""
+  });
 }
 async function handleMessage(msg) {
   if (msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
@@ -1126,61 +1246,54 @@ async function handleMessage(msg) {
     u.state = null;
     save();
     if (isNew) {
-      await send(chat, `Assalomu alaykum, <b>${esc(u.displayName)}</b>! \u{1F44B}
-
-Botga xush kelibsiz! Quyida qisqa yo\u2018riqnoma.`, MENU);
+      await send(chat, T(u, "start_new", { name: esc(u.displayName) }), menuFor(u));
       await send(chat, guideText(u));
     } else {
-      await send(chat, `Assalomu alaykum, <b>${esc(u.displayName)}</b>! \u{1F680}
-
-Bu Telegram va Instagram o\u2018zaro o\u2018sish platformasi.
-Boshqa kanallarga obuna bo\u2018lib kredit ishlang va o\u2018z kanalingizga obunachi buyurtma qiling.
-
-${balanceLine(u)}`, MENU);
+      await send(chat, T(u, "start_back", { name: esc(u.displayName), balance: balanceLine(u) }), menuFor(u));
     }
     await sponsorGate(u, chat);
     return;
   }
   if (/^\/(help|yordam|qollanma)/i.test(text)) {
     u.state = null;
-    return showHelp(chat);
+    return showHelp(u, chat);
   }
   if (text.startsWith("/admin") || text.startsWith("/") && isAdmin(u.telegramId)) {
     if (isAdmin(u.telegramId)) return handleAdmin(u, text, chat);
   }
   if (text === "/cancel") {
     u.state = null;
-    return send(chat, "Bekor qilindi.", MENU);
+    return send(chat, T(u, "cancelled"), menuFor(u));
   }
-  if (MENU_LABELS.has(text)) u.state = null;
+  if (LABEL2KEY[text]) u.state = null;
   if (!await sponsorGate(u, chat)) return;
   const st = u.state;
-  if (st && !MENU_LABELS.has(text)) {
+  if (st && !LABEL2KEY[text]) {
     if (st.type === "add_channel") return addChannel(u, text, chat);
     if (st.type === "add_ig") return addInstagram(u, text, chat);
     if (st.type === "order_qty") return prepareOrder(u, st.destId, parseInt(text.replace(/\D/g, ""), 10), chat);
     if (st.type === "ctl_code") return enterControllerCode(u, text, chat);
     if (st.type === "complaint") return submitComplaint(u, st.category, text, chat);
   }
-  switch (text) {
-    case "\u{1F4CB} Vazifalar":
-      return showTasks(u, "telegram", chat);
-    case "\u{1F4E2} Kanallarim":
+  switch (LABEL2KEY[text] || text) {
+    case "channels":
       return showChannels(u, chat);
-    case "\u{1F6D2} Buyurtmalarim":
+    case "tasks":
+      return showTasks(u, "telegram", chat);
+    case "orders":
       return showOrders(u, chat);
-    case "\u{1F4F8} Instagram":
+    case "instagram":
       return showInstagram(u, chat);
-    case "\u{1F465} Referal tizimi":
+    case "referrals":
       return showReferrals(u, chat);
-    case "\u{1F4CA} Statistika":
+    case "stats":
       return showStats(u, chat);
-    case "\u{1F6DF} Yordam":
-      return showHelp(chat);
-    case "\u2699\uFE0F Sozlamalar":
+    case "help":
+      return showHelp(u, chat);
+    case "settings":
       return showSettings(u, chat);
     default:
-      return send(chat, "Kerakli amalni pastdagi menyudan tanlang.", MENU);
+      return send(chat, T(u, "choose_menu"), menuFor(u));
   }
 }
 async function handleCallback(cq) {
@@ -1194,7 +1307,7 @@ async function handleCallback(cq) {
   const [cmd, arg] = String(cq.data || "").split(":");
   const key = `${cmd}:${arg}`;
   if (key === "sp:check") {
-    if (await sponsorGate(u, chat)) return send(chat, "\u2705 Rahmat! Endi botdan foydalanishingiz mumkin.", MENU);
+    if (await sponsorGate(u, chat)) return send(chat, "\u2705 Rahmat! Endi botdan foydalanishingiz mumkin.", menuFor(u));
     return;
   }
   if (!await sponsorGate(u, chat)) return;
@@ -1205,7 +1318,7 @@ async function handleCallback(cq) {
       return verifyBatch(u, arg === "ig" ? "instagram" : "telegram", chat);
     case "chadd":
       u.state = { type: "add_channel" };
-      return send(chat, "\u{1F4E2} <b>Kanal ulash \u2014 3 qadam</b>\n\n1. Kanalingiz sozlamalariga kirib, botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBirinchi marta ulaganingizda <b>+10 kredit</b> sovg\u2018a.\n\nBekor qilish: /cancel");
+      return send(chat, T(u, "ch_add_steps"));
     case "igadd":
       u.state = { type: "add_ig" };
       return send(chat, "\u{1F4F8} Instagram username yoki havolasini yuboring. Bekor qilish: /cancel");
@@ -1217,23 +1330,21 @@ async function handleCallback(cq) {
       if (!isTg && d.userId !== u.id) return;
       u.state = { type: "order_qty", destId: arg };
       const unit = isTg ? S().creditRewardTelegram : S().creditRewardInstagram;
-      return send(chat, `\u{1F6D2} <b>${esc(isTg ? d.title : "@" + d.username)}</b>
-
-Nechta ${isTg ? "obunachi" : "follower"} kerakligini yozing (10 dan 10000 gacha).
-\u2022 Narx: ${unit} kredit / 1 ta
-\u2022 ${balanceLine(u)}
-\u2022 Bu kredit bilan ko\u2018pi bilan: ${Math.floor(u.credits.available / unit)} ta
-\u2022 Kredit hozir band qilinadi, obunachilar kelganda sarflanadi
-\nBekor qilish: /cancel`);
+      return send(chat, T(u, "ord_qty", {
+        title: esc(isTg ? d.title : "@" + d.username),
+        unit,
+        balance: balanceLine(u),
+        max: Math.floor(u.credits.available / Math.max(1, unit))
+      }));
     }
     case "ordok": {
       const sc = u.state;
-      if (!sc || sc.type !== "order_confirm") return send(chat, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor.", MENU);
+      if (!sc || sc.type !== "order_confirm") return send(chat, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor.", menuFor(u));
       return createOrderConfirmed(u, sc.destId, sc.qty, chat);
     }
     case "ordno":
       u.state = null;
-      return send(chat, "\u274C Buyurtma bekor qilindi. Kredit band qilinmadi.", MENU);
+      return send(chat, T(u, "ord_cancelled"), menuFor(u));
     case "cx":
       return send(chat, "Buyurtmani bekor qilmoqchimisiz? Bajarilmagan qismi uchun kredit qaytariladi.", inline([[{ text: "Ha, bekor qilish", callback_data: `cxy:${arg}` }, { text: "Yo\u2018q", callback_data: "noop:0" }]]));
     case "cxy":
@@ -1262,7 +1373,7 @@ Nechta ${isTg ? "obunachi" : "follower"} kerakligini yozing (10 dan 10000 gacha)
       db.channels = db.channels.filter((x) => x.id !== ch.id);
       for (const t of db.tasks) if (t.destinationId === ch.id && OPEN.has(t.status)) t.status = "CANCELLED";
       save();
-      return send(chat, `✅ <b>${esc(ch.title)}</b> uzildi.` + (refunded ? `\n↩️ ${refunded} kredit qaytarildi.` : "") + `\n\n${balanceLine(u)}`, MENU);
+      return send(chat, `✅ <b>${esc(ch.title)}</b> uzildi.` + (refunded ? `\n↩️ ${refunded} kredit qaytarildi.` : "") + `\n\n${balanceLine(u)}`, menuFor(u));
     }
     case "ctl": {
       const ch = db.channels.find((c) => c.id === arg && c.ownerId === u.id);
@@ -1280,20 +1391,18 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       return send(chat, "\u{1F511} 6 xonali kodni yuboring:");
     case "cmp":
       u.state = { type: "complaint_pick", destinationId: null, destinationTitle: null };
-      return send(chat, "Muammo turini tanlang:", inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+      return send(chat, T(u, "cmp_choose"), inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
     case "cmpd": {
       const t = db.tasks.find((x) => x.id === arg && x.assignedTo === u.id);
       u.state = { type: "complaint_pick", destinationId: t ? t.destinationId : null, destinationTitle: t ? t.destinationTitle : null };
-      return send(chat, `⚠️ <b>${esc(t ? t.destinationTitle : "Muammo")}</b>\n\nMuammo turini tanlang:`, inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
+      return send(chat, `⚠️ <b>${esc(t ? t.destinationTitle : "—")}</b>\n\n` + T(u, "cmp_choose"), inline(CATEGORIES.map((c, i) => [{ text: c, callback_data: `cmpc:${i}` }])));
     }
     case "cmpc": {
       const c = CATEGORIES[Number(arg)];
       if (!c) return;
       const dst = u.state && u.state.type === "complaint_pick" ? u.state : {};
       u.state = { type: "complaint", category: c, destinationId: dst.destinationId || null, destinationTitle: dst.destinationTitle || null };
-      return send(chat, `\u{1F4DD} <b>${esc(c)}</b>
-
-Muammoni batafsil yozing. Bekor qilish: /cancel`);
+      return send(chat, T(u, "cmp_enter", { cat: esc(c) }));
     }
     case "notif":
       u.notifications = !u.notifications;
@@ -1302,11 +1411,18 @@ Muammoni batafsil yozing. Bekor qilish: /cancel`);
     case "refa": {
       const [rid, cid] = String(arg || "").split("|");
       const ref = db.referrals.find((r) => r.id === rid && r.referrerId === u.id && !r.bonusIssued);
-      if (!ref) return send(chat, "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi.", MENU);
+      if (!ref) return send(chat, "Bu bonus allaqachon yo‘naltirilgan yoki topilmadi.", menuFor(u));
       const ch = channelsOf(u).find((c) => c.id === cid);
-      if (!ch) return send(chat, "Kanal topilmadi.", MENU);
+      if (!ch) return send(chat, "Kanal topilmadi.", menuFor(u));
       const r = allocateRefBonus(u, ref, ch);
-      return send(chat, `🎁 Referal bonusi <b>${esc(ch.title)}</b> kanaliga yo‘naltirildi: <b>${r.units}</b> ta obunachi navbatga qo‘shildi.`, MENU);
+      return send(chat, `🎁 Referal bonusi <b>${esc(ch.title)}</b> kanaliga yo‘naltirildi: <b>${r.units}</b> ta obunachi navbatga qo‘shildi.`, menuFor(u));
+    }
+    case "lang": {
+      if (!STR[arg]) return;
+      u.language = arg;
+      save();
+      await send(chat, T(u, "lang_saved"), menuFor(u));
+      return showSettings(u, chat);
     }
     case "nt": {
       if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
