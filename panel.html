@@ -115,6 +115,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
   <section class="tab" id="tab-channels">
     <h2>Kanallar</h2>
     <div class="sub" id="ch-sub"></div>
+    <div class="muted" style="margin:-8px 0 14px;font-size:12px">«Vazifa qo'shish» — kanalga kredit talab qilmasdan obunachi navbati yaratadi, shunda foydalanuvchilarda shu kanal uchun vazifa paydo bo'ladi.</div>
     <div class="box"><div id="ch-list"></div></div>
   </section>
 
@@ -325,7 +326,18 @@ async function loadChannels() {
     '<tr><td><b>' + esc(c.title) + '</b><div class="mono muted">@' + esc(c.username) + '</div></td>' +
     '<td>' + esc(c.ownerName) + '</td><td>' + money(c.verifiedSubscribers) + '</td><td>' + money(c.pendingSubscriptions) + '</td>' +
     '<td>' + (c.botHasAdminRights ? '<span class="pill ok">admin</span>' : '<span class="pill err">admin emas</span>') + '</td>' +
-    '<td><button class="btn danger sm" data-ch-del="' + esc(c.id) + '">O\'chirish</button></td></tr>').join(''));
+    '<td><button class="btn ghost sm" data-ch-grant="' + esc(c.id) + '" title="Kredit talab qilmasdan obunachi vazifasi qo\'shadi">Vazifa qo\'shish</button> ' +
+    '<button class="btn danger sm" data-ch-del="' + esc(c.id) + '">O\'chirish</button></td></tr>').join(''));
+  document.querySelectorAll('[data-ch-grant]').forEach(el => el.onclick = async () => {
+    const v = prompt('Necha obunachi vazifasi qo\'shilsin? (10–10000, kredit talab qilinmaydi)', '50');
+    if (v === null || v.trim() === '') return;
+    const qty = Number(v);
+    if (!Number.isFinite(qty) || qty < 10) return toast('Kamida 10 bo\'lishi kerak', true);
+    el.disabled = true;
+    try { await api('/api/admin/order', { action: 'grant', destinationId: el.dataset.chGrant, qty }); toast('Vazifa qo\'shildi: ' + qty + ' ta'); }
+    catch (e) { toast(e.message, true); }
+    el.disabled = false;
+  });
   document.querySelectorAll('[data-ch-del]').forEach(el => el.onclick = async () => {
     if (!confirm('Kanalni o\'chirasizmi?')) return;
     try { await api('/api/admin/channel', { id: el.dataset.chDel, action: 'delete' }); toast('O\'chirildi'); loadChannels(); }

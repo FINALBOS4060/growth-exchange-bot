@@ -1891,6 +1891,37 @@ var server = http.createServer((req, res) => {
           };
         }
         case "order": {
+          // "grant" — admin kanalga vazifa (obunachi navbati) qo'shadi.
+          // Kredit talab qilinmaydi: nol narxli faol buyurtma yaratiladi, shunda
+          // foydalanuvchilarda shu kanal uchun obuna vazifasi paydo bo'ladi.
+          if (b.action === "grant") {
+            const dest = db.channels.find((c) => c.id === String(b.destinationId || ""));
+            if (!dest) throw new Error("Kanal topilmadi");
+            const qty = Math.min(1e4, Math.max(10, Math.round(Number(b.qty) || 50)));
+            const o = {
+              id: nid("ord"),
+              seq: ++db.seq,
+              userId: dest.ownerId,
+              userName: dest.ownerName,
+              destinationId: dest.id,
+              destinationTitle: dest.title,
+              platform: "telegram",
+              requestedQuantity: qty,
+              verifiedQuantity: 0,
+              pendingQuantity: qty,
+              cancelledQuantity: 0,
+              unitCost: 0,
+              totalCost: 0,
+              status: "active",
+              granted: true,
+              createdAt: nowStr()
+            };
+            db.orders.push(o);
+            dest.totalRequested += qty;
+            dest.pendingSubscriptions += qty;
+            save();
+            return { orderId: o.id, qty };
+          }
           const o = db.orders.find((x) => x.id === String(b.id || ""));
           if (!o) throw new Error("Buyurtma topilmadi");
           if (o.status !== "active") throw new Error("Bu buyurtma allaqachon yopilgan");
@@ -2104,9 +2135,29 @@ function botsInit() {
   save();
   return list;
 }
+// Bir martalik: bonus joriy etilishidan oldin ro'yxatdan o'tgan foydalanuvchilarga ham
+// 10 kreditni berib qo'yamiz (signupBonus maydoni bo'lmasa — hali olmagan).
+function backfillSignupBonus() {
+  const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
+  if (!bonus) return 0;
+  let n = 0;
+  for (const u of Object.values(db.users)) {
+    if (!u.credits || u.credits.signupBonus !== void 0) continue;
+    u.credits.signupBonus = bonus;
+    u.credits.available += bonus;
+    addTx(u, bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi (bir marta)");
+    n++;
+  }
+  if (n) {
+    save();
+    console.log(`Sovg'a backfill: ${n} foydalanuvchiga +${bonus} kredit`);
+  }
+  return n;
+}
 async function main() {
   await openStore();
   botsInit();
+  backfillSignupBonus();
   server.on("error", (e) => {
     console.error("HTTP server xatosi:", e.message);
     process.exit(1);
