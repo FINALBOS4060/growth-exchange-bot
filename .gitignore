@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.render-key
+.render-state.json
 
 # Lokal ma'lumotlar bazasi (fayl rejimi)
 data/
