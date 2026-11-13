@@ -343,6 +343,16 @@ function save() {
     persist();
   }, 500);
 }
+// Xavfsizlik holati (login urinishlari) uchun darhol yozish: jarayon shu
+// paytda o'chsa ham blok yo'qolmaydi.
+function flushSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  saveNow();
+  persist();
+}
 var S = () => db.settings;
 // 1 obunachi necha kredit turadi (1:1 qoidasi).
 function perSub() {
@@ -2156,35 +2166,78 @@ function audit(req, action, target, meta) {
   }
 }
 var SESSION_TTL_LONG = 30 * 24 * 36e5;
-var LOGIN_TRIES = new Map();
-var LOGIN_MAX = 6;
+// Login himoyasi: har bir hisob (email/login) va har bir IP alohida hisoblanadi.
+// Hisoblagich bazaga yoziladi — servis qayta ishga tushsa ham blok saqlanadi.
 var LOGIN_WINDOW = 15 * 6e4;
+var LOGIN_MAX_USER = 6; // bitta hisob uchun 15 daqiqada
+var LOGIN_MAX_IP = 30; // bitta IP uchun (bitta tarmoq ortidagi bir necha kishi uchun zaxira)
+function loginGuard() {
+  if (!db.loginGuard || typeof db.loginGuard !== "object") db.loginGuard = { users: {}, ips: {} };
+  if (!db.loginGuard.users) db.loginGuard.users = {};
+  if (!db.loginGuard.ips) db.loginGuard.ips = {};
+  return db.loginGuard;
+}
+function guardState(bucket, key, limit) {
+  const now = Date.now();
+  const map = loginGuard()[bucket];
+  const e = map[key];
+  if (!e || !Number.isFinite(e.first) || now - e.first > LOGIN_WINDOW) {
+    if (e) delete map[key];
+    return { blocked: false, left: limit };
+  }
+  if (e.n >= limit) return { blocked: true, minutesLeft: Math.max(1, Math.ceil((LOGIN_WINDOW - (now - e.first)) / 6e4)) };
+  return { blocked: false, left: Math.max(0, limit - e.n) };
+}
+function guardTouch(bucket, key, limit) {
+  const now = Date.now();
+  const map = loginGuard()[bucket];
+  const e = map[key];
+  if (!e || !Number.isFinite(e.first) || now - e.first > LOGIN_WINDOW) map[key] = { n: 1, first: now };
+  else e.n++;
+  return Math.min(map[key].n, limit);
+}
+function guardPrune() {
+  const now = Date.now();
+  for (const bucket of ["users", "ips"]) {
+    const map = loginGuard()[bucket];
+    for (const k of Object.keys(map)) {
+      if (!Number.isFinite(map[k].first) || now - map[k].first > LOGIN_WINDOW) delete map[k];
+    }
+    const rest = Object.keys(map);
+    if (rest.length > 400) for (const k of rest.slice(0, rest.length - 400)) delete map[k];
+  }
+}
 function clientIp(req) {
   const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return xf || (req.socket && req.socket.remoteAddress) || "anonim";
+  if (xf && /^[0-9a-fA-F:.]+$/.test(xf)) return xf;
+  return (req.socket && req.socket.remoteAddress) || "anonim";
 }
-function loginGate(ip) {
-  const r = LOGIN_TRIES.get(ip);
-  if (!r) return { blocked: false };
-  const spent = Date.now() - r.first;
-  if (spent > LOGIN_WINDOW) {
-    LOGIN_TRIES.delete(ip);
-    return { blocked: false };
-  }
-  if (r.n >= LOGIN_MAX) return { blocked: true, minutesLeft: Math.max(1, Math.ceil((LOGIN_WINDOW - spent) / 6e4)) };
-  return { blocked: false };
+// Hisob bloki ustuvor; IP bloki faqat ko'p hisob bilan urinilganda ishlaydi.
+function loginGate(ip, login) {
+  const byUser = login ? guardState("users", login, LOGIN_MAX_USER) : { blocked: false, left: LOGIN_MAX_USER };
+  if (byUser.blocked) return { blocked: true, minutesLeft: byUser.minutesLeft, scope: "user", left: 0 };
+  const byIp = guardState("ips", ip, LOGIN_MAX_IP);
+  if (byIp.blocked) return { blocked: true, minutesLeft: byIp.minutesLeft, scope: "ip", left: 0 };
+  return { blocked: false, scope: "", left: byUser.left };
 }
-function loginFail(ip) {
-  const now = Date.now();
-  const r = LOGIN_TRIES.get(ip);
-  if (!r || now - r.first > LOGIN_WINDOW) LOGIN_TRIES.set(ip, { n: 1, first: now });
-  else r.n++;
-  if (LOGIN_TRIES.size > 800) LOGIN_TRIES.clear();
-  const cur = LOGIN_TRIES.get(ip);
-  return Math.max(0, LOGIN_MAX - (cur ? cur.n : 0));
+function loginFail(ip, login) {
+  const ipN = guardTouch("ips", ip, LOGIN_MAX_IP);
+  const userN = login ? guardTouch("users", login, LOGIN_MAX_USER) : 0;
+  guardPrune();
+  flushSave();
+  return {
+    userLeft: login ? Math.max(0, LOGIN_MAX_USER - userN) : LOGIN_MAX_USER,
+    ipLeft: Math.max(0, LOGIN_MAX_IP - ipN),
+    blocked: (login && userN >= LOGIN_MAX_USER) || ipN >= LOGIN_MAX_IP
+  };
 }
-function loginOk(ip) {
-  LOGIN_TRIES.delete(ip);
+function loginOk(ip, login) {
+  const g = loginGuard();
+  if (login && g.users[login]) delete g.users[login];
+  // Muvaffaqiyatli kirish IP blokini butunlay ochmaydi — faqat bittaga kamaytiradi.
+  if (g.ips[ip] && g.ips[ip].n > 0) g.ips[ip].n = Math.max(0, g.ips[ip].n - 1);
+  guardPrune();
+  flushSave();
 }
 // Egasi: ADMIN_EMAIL (yoki "admin"/"owner") + ADMIN_PASSWORD.
 // ADMIN_EMAIL berilmagan bo'lsa eski xatti-harakat — faqat parol tekshiriladi.
@@ -2864,8 +2917,6 @@ var server = http.createServer((req, res) => {
         };
         if (!sameOrigin(req)) return fail(403, "So‘rov boshqa saytdan yuborilgan — rad etildi.");
         const ip = clientIp(req);
-        const gate = loginGate(ip);
-        if (gate.blocked) return fail(429, "Juda ko‘p urinish. " + gate.minutesLeft + " daqiqadan keyin qayta urinib ko‘ring.");
         let body = {};
         try {
           body = JSON.parse(raw || "{}");
@@ -2875,6 +2926,8 @@ var server = http.createServer((req, res) => {
         }
         const uname = String((body && body.username) || "").trim().toLowerCase();
         const pass = String((body && body.password) || "");
+        const gate = loginGate(ip, uname);
+        if (gate.blocked) return fail(429, "Juda ko‘p xato urinish. " + gate.minutesLeft + " daqiqadan keyin qayta urinib ko‘ring.");
         const remember = !!(body && (body.remember === true || body.remember === "1" || body.remember === "on"));
         const adm = db.adminUsers.find((x) => x.username.toLowerCase() === uname);
         let role = "";
@@ -2887,12 +2940,12 @@ var server = http.createServer((req, res) => {
           name = ADMIN_EMAIL || "owner";
         }
         if (!role) {
-          const left = loginFail(ip);
+          const res2 = loginFail(ip, uname);
           audit({ auth: { username: "anonim", role: "guest" }, headers: { "x-forwarded-for": ip } }, "login_failed", String(uname).slice(0, 64));
-          if (left === 0) return fail(429, "Juda ko‘p urinish. 15 daqiqadan keyin qayta urinib ko‘ring.");
-          return fail(401, "Email yoki parol xato. Qolgan urinish: " + left + ".");
+          if (res2.blocked) return fail(429, "Juda ko‘p xato urinish. 15 daqiqadan keyin qayta urinib ko‘ring.");
+          return fail(401, "Email yoki parol xato. Qolgan urinish: " + res2.userLeft + ".");
         }
-        loginOk(ip);
+        loginOk(ip, uname);
         const ttl = remember ? SESSION_TTL_LONG : SESSION_TTL;
         const tok = crypto.randomBytes(24).toString("hex");
         SESSIONS.set(tok, { username: name, role, exp: Date.now() + ttl });
