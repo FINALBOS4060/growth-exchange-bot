@@ -100,10 +100,11 @@ baza bo'sh bo'lsa, fayl avtomatik import qilinadi. (Yoki `psql` bilan to'g'ridan
 - **Deploy vaqtida qisqa uzilish:** Render yangi instansiyani ko'tarib, eskisini o'chiradi.
   Shu paytda ikkita jarayon bir vaqtda poll qilsa `409` bo'lishi mumkin — bir necha soniyada
   o'zi tiklanadi.
-- **`TELEGRAM_BOT_TOKEN`ni panel orqali o'zgartirib bo'lmaydi** — env'da turishi kerak
-  (kodda ataylab `db.settings.telegramBotToken` tozalanadi).
-- **Veb panel** hozircha demo interfeys: haqiqiy raqamlar `/api/stats`da va botdagi
-  `/admin` buyrug'ida.
+- **Asosiy bot tokeni** (`TELEGRAM_BOT_TOKEN`) env'dan olinadi; panelda u **faqat ko'rinadi**.
+  Qo'shimcha **ishchi botlar** panel orqali qo'shiladi va o'chiriladi (pastdagi 9-bo'lim).
+- **Veb panel** (`/`) endi haqiqiy ma'lumot bilan ishlaydi: foydalanuvchilar, kanallar,
+  buyurtmalar, vazifalar, shikoyatlar, homiylar, botlar va sozlamalar — hammasi bazadan.
+  Soxta demo raqamlar va Telegram chat (mini app) interfeysi olib tashlangan.
 
 ---
 
@@ -119,6 +120,9 @@ baza bo'sh bo'lsa, fayl avtomatik import qilinadi. (Yoki `psql` bilan to'g'ridan
 | `KEEP_ALIVE_SEC` | yo'q | Uyg'otish oralig'i, soniya (standart 600) |
 | `APP_URL` | yo'q | `RENDER_EXTERNAL_URL` bo'lmasa ishlatiladi |
 | `DATA_FILE` | yo'q | Lokal fayl yo'li (standart `./data/db.json`) |
+| `NEWS_BOT_TOKEN` | yangiliklar boti uchun | `@Dunyo_Yangiliklari_Texno_bot` tokeni |
+| `GEMINI_API_KEY` | yangiliklar boti uchun | Post yaratish kaliti (`/news`da ham kiritiladi) |
+| `NEWS_RSS_QUERY` | yo'q | Yangilik mavzusi (standart `technology`) |
 | `PORT`, `IP` | yo'q | Render o'zi beradi |
 
 ---
@@ -203,3 +207,37 @@ Zaxira nusxa: `curl -u admin:PAROL .../api/stats` (statistika) yoki Postgres:
 Admin buyruqlari: `/admin /pause /resume /freeze /unfreeze /igon /igoff /addcredits ID SON
 /block ID /unblock ID /broadcast MATN /complaints /reply TICKET MATN
 /sponsor add @kanal|del @kanal|list /reward tg|ig|ref SON`
+
+---
+
+## 11. Panel, multi-bot va yangiliklar boti
+
+### Panel (Basic auth, `/`)
+
+Bo'limlar: **Umumiy** (real statistika, botlar holati, oxirgi ro'yxatdan o'tganlar),
+**Botlar**, **Foydalanuvchilar** (qidiruv, kredit qo'shish/ayirish, bloklash),
+**Kanallar**, **Buyurtmalar** (bekor qilish + avtomatik qaytarim), **Vazifalar**,
+**Shikoyatlar** (javob yuborish), **Homiy kanallar**, **Sozlamalar** (mukofotlar,
+pause/freeze/IG/hisobot, broadcast). Yangiliklar boti — `/news`.
+
+Barcha raqamlar `db`dan olinadi; panelda soxta/demo ma'lumot yo'q.
+
+### Bir nechta bot — bitta baza
+
+`@Obuna_2X_bot` asosiy bot (`TELEGRAM_BOT_TOKEN`). Panel → **Botlar** bo'limida
+boshqa bot tokenlarini qo'shish mumkin. Har bir bot o'z long-polling tsikli bilan
+ishlaydi (offset alohida), lekin **bitta `db`** ni ishlatadi: foydalanuvchi qaysi
+botga yozsa ham bir xil hisob, kanallar va buyurtmalar. Shuning uchun Telegram'da
+bir necha "kirish nuqtasi" qilish mumkin.
+
+### Yangi foydalanuvchi
+
+- `/start` bosganda **10 kredit** sovg'a (`creditRewardSignup`, panelda o'zgartiriladi).
+- Keyin qadam-baqadam **yo'riqnoma** yuboriladi (kredit ishlash → kanal ulash →
+  buyurtma → referal).
+
+### Yangiliklar boti
+
+`@Dunyo_Yangiliklari_Texno_bot` → kanal `@Dunyo_Yangiliklari_Texno`.
+Jadval: **06:00, 09:00, 12:00, 15:00, 18:00, 21:00** (Asia/Tashkent, har 3 soat).
+Model zanjiri + cooldown: bitta model limiti tugasa, keyingisiga o'tadi.

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // src/logic/growthLogic.ts
 function buildFifoQueueWithDeferred(existingQueue, deferredTasks, newIncomingTasks) {
@@ -128,6 +129,8 @@ var defaultSettings = () => ({
   creditRewardTelegram: 100,
   creditRewardInstagram: 100,
   creditRewardReferral: 200,
+  // Yangi ro'yxatdan o'tgan foydalanuvchiga bir martalik sovg'a
+  creditRewardSignup: 10,
   isInstagramEnabled: false,
   // Instagram'ni tekshirib bo'lmaydi (o'zi tasdiqlaydi) — admin /igon bilan yoqadi
   isBotPaused: false,
@@ -140,12 +143,15 @@ var defaultSettings = () => ({
   botId: "",
   webhookUrl: "",
   webhookStatus: "polling",
-  // News bot (world-news-bot integratsiyasi) — /news sahifasidan boshqariladi
+  // Bir nechta bot tokeni bitta bazaga ulanadi (asosiy bot + ishchi botlar).
+  // Har bir yozuv: { id, token, role: "main"|"worker", enabled, username, displayName, offset, ... }
+  bots: [],
+  // News bot (@Dunyo_Yangiliklari_Texno_bot) — /news sahifasidan boshqariladi
   news: {
     enabled: true,
-    channel: "@WORLD_NEWS_1M",
-    times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
-    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-2.5-flash-lite", "antigravity-preview-latest"],
+    channel: "@Dunyo_Yangiliklari_Texno",
+    times: ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"],
+    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-2.5-flash-lite", "antigravity-preview-latest"],
     apiKey: "",
     sent: [],
     history: [],
@@ -273,9 +279,37 @@ var nowStr = () => (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").
 var esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 var nid = (p) => `${p}-${Date.now().toString(36)}${(++db.seq).toString(36)}`;
 var isAdmin = (id) => ADMIN_IDS.includes(id);
-async function tg(method, params = {}, timeoutMs = 35e3) {
+// ---------------------------------------------------------------------------
+// Bir nechta bot, bitta baza.
+// @Obuna_2X_bot va unga qo'shilgan ishchi botlar bitta db obyektini, bitta
+// foydalanuvchilar/kanallar/buyurtmalar to'plamini ishlatadi — farqi faqat
+// Telegram'ga qaysi token orqali ulanishida.
+// Joriy bot AsyncLocalStorage orqali uzatiladi: bir vaqtda ishlayotgan ikki
+// botning so'rovlari bir-biriga aralashmaydi.
+var botCtx = new AsyncLocalStorage();
+function botsList() {
+  const s = S();
+  if (!Array.isArray(s.bots)) s.bots = [];
+  return s.bots;
+}
+function primaryBot() {
+  const l = botsList();
+  return l.find((b) => b.id === "bot-main") || l[0] || null;
+}
+function botById(id) {
+  return botsList().find((b) => b.id === id) || null;
+}
+function botName(b) {
+  return b ? b.username ? "@" + b.username : b.displayName || (b.role === "main" ? "Asosiy bot" : "Ishchi bot") : "—";
+}
+function curBot() {
+  return botCtx.getStore() || primaryBot() || { token: TOKEN };
+}
+async function tgWith(bot, method, params = {}, timeoutMs = 35e3) {
+  const token = (bot && bot.token) || "";
+  if (!token) return { ok: false, description: "Bot tokeni yo'q" };
   try {
-    const r = await fetch(`${API}/bot${TOKEN}/${method}`, {
+    const r = await fetch(`${API}/bot${token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(params),
@@ -286,8 +320,19 @@ async function tg(method, params = {}, timeoutMs = 35e3) {
     return { ok: false, description: String(e), network: true };
   }
 }
-var send = (chat, text, extra = {}) => tg("sendMessage", { chat_id: chat, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
-var notify = (u, text) => u ? send(u.chatId, text) : Promise.resolve();
+var tg = (method, params = {}, timeoutMs = 35e3) => tgWith(curBot(), method, params, timeoutMs);
+function msgExtra(extra = {}) {
+  return { parse_mode: "HTML", disable_web_page_preview: true, ...extra };
+}
+function sendWith(bot, chat, text, extra = {}) {
+  return tgWith(bot, "sendMessage", { chat_id: chat, text, ...msgExtra(extra) }, 35e3);
+}
+var send = (chat, text, extra = {}) => sendWith(curBot(), chat, text, extra);
+var notify = (u, text) => {
+  if (!u) return Promise.resolve();
+  const b = botCtx.getStore() || (u.botId ? botById(u.botId) : null) || primaryBot();
+  return sendWith(b, u.chatId, text, {});
+};
 async function checkMember(chat, userId) {
   const r = await tg("getChatMember", { chat_id: chat, user_id: userId }, 15e3);
   if (r.ok) {
@@ -318,13 +363,14 @@ function getUser(from, chatId) {
   let isNew = false;
   if (!db.users[key]) {
     isNew = true;
+    const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
     db.users[key] = {
       id: `u-${from.id}`,
       telegramId: from.id,
       username: from.username,
       displayName: [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || String(from.id),
       language: "uz",
-      credits: { available: 0, reserved: 0, spent: 0, refunded: 0, verifiedRewards: 0, selfReportedRewards: 0 },
+      credits: { available: bonus, reserved: 0, spent: 0, refunded: 0, verifiedRewards: 0, selfReportedRewards: 0, signupBonus: bonus },
       registeredAt: nowStr(),
       referralCode: `REF_${from.id}`,
       isReferralVerified: false,
@@ -332,11 +378,17 @@ function getUser(from, chatId) {
       activeOrdersCount: 0,
       status: "active",
       chatId,
+      botId: (curBot() || {}).id || "",
       notifications: true
     };
+    if (bonus > 0) {
+      addTx(db.users[key], bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi");
+      console.log(`Yangi foydalanuvchi ${from.id} — +${bonus} kredit sovg'a`);
+    }
   }
   const u = db.users[key];
   u.chatId = chatId;
+  u.botId = (curBot() || {}).id || u.botId || "";
   u.username = from.username;
   u.displayName = [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || u.displayName;
   return { user: u, isNew };
@@ -734,7 +786,10 @@ async function addChannel(u, text, chat) {
 }
 var BOT_ID = 0;
 async function checkBotAdmin(chatId) {
-  const r = await tg("getChatMember", { chat_id: chatId, user_id: BOT_ID });
+  const b = curBot();
+  const me = b && b.botId ? b.botId : BOT_ID;
+  if (!me) return false;
+  const r = await tg("getChatMember", { chat_id: chatId, user_id: me });
   return r.ok && r.result.status === "administrator";
 }
 async function addInstagram(u, text, chat) {
@@ -797,6 +852,49 @@ async function enterControllerCode(u, code, chat) {
   }
   return send(chat, `\u274C ${lastReason}`, MENU);
 }
+function guideText(u) {
+  const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
+  const per = S().creditRewardTelegram;
+  return `\u{1F4D6} <b>Bot qanday ishlaydi — qisqa yo\u2018riqnoma</b>
+
+` +
+    (bonus > 0 ? `\u{1F381} Boshlash uchun hisobingizga <b>${bonus} kredit</b> sovg\u2018a qilindi. ` : ``) +
+    `Kredit \u2014 bu bot ichidagi pul: uni vazifa bajarib ishlaysiz va o\u2018z kanalingizga obunachi buyurtib sarflaysiz.
+
+` +
+    `<b>1-qadam \u2014 Kredit ishlash</b>
+` +
+    `\u201C\u{1F4CB} Vazifalar\u201D tugmasini bosing. Bot sizga 10 tagacha kanal beradi. Har bir kanalga obuna bo\u2018ling, so\u2018ng \u201C\u2705 Obuna bo\u2018ldim\u201D tugmasini bosing \u2014 bot obunani o\u2018zi tekshiradi va har biri uchun <b>+${per} kredit</b> beradi.
+
+` +
+    `<b>2-qadam \u2014 Kanalingizni ulash</b>
+` +
+    `\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo\u2018shish\u201D. Avval botni kanalingizga <b>administrator</b> qilib qo\u2018shing, keyin kanal username\u2019ini yuboring. Siz faqat o\u2018zingiz admin bo\u2018lgan kanalni ulay olasiz.
+
+` +
+    `<b>3-qadam \u2014 Buyurtma berish</b>
+` +
+    `Kanalingizni tanlab, nechta obunachi kerakligini yozing. Har bir obunachi ${per} kredit. Kredit band qilinadi va FIFO navbatiga qo\u2018yiladi: boshqa foydalanuvchilar obuna bo\u2018lganda avtomatik tasdiqlanadi.
+
+` +
+    `<b>4-qadam \u2014 Referal</b>
+` +
+    `\u201C\u{1F465} Referal tizimi\u201D dan havolangizni oling. Do\u2018stingiz shu havola orqali kirib birinchi vazifasini bajarsa, sizga <b>+${S().creditRewardReferral} kredit</b>.
+
+` +
+    `<b>Foydali ma\u2019lumot</b>
+` +
+    `\u2022 \u201C\u{1F6D2} Buyurtmalarim\u201D \u2014 buyurtma holati va bekor qilib kreditni qaytarish
+` +
+    `\u2022 \u201C\u{1F4CA} Statistika\u201D \u2014 balans, bajarilgan vazifalar, kanallar
+` +
+    `\u2022 \u201C\u2699\uFE0F Sozlamalar\u201D \u2014 soatlik hisobotni yoqish/o\u2018chirish
+` +
+    `\u2022 \u201C\u{1F6DF} Yordam\u201D \u2014 muammo bo\u2018lsa shikoyat yuboring, admin javob beradi
+
+` +
+    `Pastdagi menyudan boshlang \u2193`;
+}
 async function handleMessage(msg) {
   if (msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
   const chat = msg.chat.id;
@@ -815,12 +913,19 @@ async function handleMessage(msg) {
     }
     u.state = null;
     save();
-    await send(chat, `Assalomu alaykum, <b>${esc(u.displayName)}</b>! \u{1F680}
+    if (isNew) {
+      await send(chat, `Assalomu alaykum, <b>${esc(u.displayName)}</b>! \u{1F44B}
+
+Botga xush kelibsiz! Quyida qisqa yo\u2018riqnoma.`, MENU);
+      await send(chat, guideText(u));
+    } else {
+      await send(chat, `Assalomu alaykum, <b>${esc(u.displayName)}</b>! \u{1F680}
 
 Bu Telegram va Instagram o\u2018zaro o\u2018sish platformasi.
 Boshqa kanallarga obuna bo\u2018lib kredit ishlang va o\u2018z kanalingizga obunachi buyurtma qiling.
 
 ${balanceLine(u)}`, MENU);
+    }
     await sponsorGate(u, chat);
     return;
   }
@@ -1120,26 +1225,39 @@ async function maintenance() {
   }
   save();
 }
-async function pollLoop() {
+// Har bir bot o'z long-polling tsiklini yuradi, lekin hammasi bitta db'ga yozadi.
+var botRuns = /* @__PURE__ */ new Map();
+async function pollLoop(bot, token) {
   for (; ; ) {
-    const r = await tg("getUpdates", { offset: db.offset, timeout: 30, allowed_updates: ["message", "callback_query"] }, 45e3);
+    if (botRuns.get(bot.id) !== token) return;
+    const r = await tgWith(bot, "getUpdates", { offset: bot.offset || 0, timeout: 30, allowed_updates: ["message", "callback_query"] }, 45e3);
     if (!r.ok) {
-      console.error("getUpdates xato:", r.description);
+      bot.lastError = r.description || "getUpdates xatosi";
+      console.error(`[${botName(bot)}] getUpdates xato:`, r.description);
+      save();
       await new Promise((res) => setTimeout(res, r.error_code === 409 ? 1e4 : 3e3));
       continue;
     }
+    if (bot.lastError) {
+      bot.lastError = "";
+      save();
+    }
     for (const up of r.result) {
-      db.offset = up.update_id + 1;
+      bot.offset = up.update_id + 1;
       const from = up.message?.from || up.callback_query?.from;
       if (!from) continue;
-      if (up.message) enqueue(from.id, () => handleMessage(up.message));
-      else if (up.callback_query) enqueue(from.id, () => handleCallback(up.callback_query));
+      const upd = up;
+      enqueue(from.id, () => botCtx.run(bot, () => upd.message ? handleMessage(upd.message) : handleCallback(upd.callback_query)));
     }
     save();
   }
 }
-var MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".map": "application/json" };
-var DIST = path.join(ROOT, "dist");
+var PANEL_PAGE = "";
+try {
+  PANEL_PAGE = fs.readFileSync(path.join(ROOT, "panel.html"), "utf8");
+} catch (e) {
+  console.error("panel.html o'qilmadi:", e.message);
+}
 function authed(req) {
   const h = req.headers.authorization || "";
   if (!ADMIN_PASSWORD || !h.startsWith("Basic ")) return false;
@@ -1147,8 +1265,71 @@ function authed(req) {
   const a = Buffer.from(pass), b = Buffer.from(ADMIN_PASSWORD);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+// --- Admin panel API yordamchilari ---
+var startedAt = Date.now();
+function jsonOut(res, code, obj) {
+  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.end(JSON.stringify(obj));
+}
+function sameOrigin(req) {
+  const o = req.headers.origin;
+  if (!o) return true;
+  try {
+    return new URL(o).host === (req.headers.host || "");
+  } catch {
+    return false;
+  }
+}
+function uptimeStr() {
+  const s = Math.floor((Date.now() - startedAt) / 1e3);
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return `${d}d ${h}h ${m}m`;
+}
+function maskToken(t) {
+  t = String(t || "");
+  if (!t) return "";
+  return t.length <= 14 ? t.slice(0, 4) + "…" : t.slice(0, 6) + "…" + t.slice(-4);
+}
+function botView(b) {
+  return {
+    id: b.id,
+    role: b.role || "worker",
+    label: botName(b),
+    username: b.username || "",
+    botId: b.botId || "",
+    enabled: !!b.enabled,
+    online: botRuns.has(b.id),
+    tokenMasked: maskToken(b.token),
+    lastError: b.lastError || "",
+    createdAt: b.createdAt || ""
+  };
+}
+function cancelOrderAdmin(o) {
+  const owner = userById(o.userId);
+  const { refundableUnits, refundCredits } = calculateRefundAmount(o);
+  o.cancelledQuantity += refundableUnits;
+  o.pendingQuantity = 0;
+  o.status = "cancelled";
+  o.completedAt = nowStr();
+  if (owner) {
+    owner.credits.reserved = Math.max(0, owner.credits.reserved - refundCredits);
+    owner.credits.available += refundCredits;
+    owner.credits.refunded += refundCredits;
+    owner.activeOrdersCount = Math.max(0, owner.activeOrdersCount - 1);
+    addTx(owner, refundCredits, "order_refund", `Admin bekor qildi: ${o.destinationTitle}`, { orderId: o.id });
+    notify(owner, `\u21A9\uFE0F Buyurtmangiz admin tomonidan bekor qilindi.\n${esc(o.destinationTitle)}\n${refundableUnits} ta uchun <b>${refundCredits}</b> kredit qaytarildi.`);
+  }
+  for (const t of db.tasks) if (t.orderId === o.id && OPEN.has(t.status)) t.status = "CANCELLED";
+  const dest = destOf(o.destinationId);
+  if (dest) {
+    if (dest.pendingSubscriptions !== void 0) dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - refundableUnits);
+    if (dest.pendingFollowers !== void 0) dest.pendingFollowers = Math.max(0, dest.pendingFollowers - refundableUnits);
+  }
+  save();
+  return { refundCredits, refundableUnits };
+}
 // --- News bot: Gemini bilan yangilik yaratib, kanalga post qiladi ---
-var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "8231778750:AAH4jJaKSZ7a_ATxSHthi_JiRWuIJ2ob33Q").trim();
+var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "8716237015:AAFaPMNGc-AXJRfoDirESjkaZRalL9gs0zM").trim();
 var newsBotInfo = { username: "", id: "" };
 // Model cooldown: 429/404/503 bo'lgan modellar vaqtincha o'tkazib yuboriladi,
 // shunda world-news-bot bitta modelning limitiga bog'liq bo'lib qolmaydi.
@@ -1163,8 +1344,8 @@ function newsModelCooldownSet(m, ms) {
 function newsDefaults() {
   return {
     enabled: true,
-    channel: "@WORLD_NEWS_1M",
-    times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
+    channel: "@Dunyo_Yangiliklari_Texno",
+    times: ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"],
     models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-2.5-flash-lite", "antigravity-preview-latest"],
     apiKey: process.env.GEMINI_API_KEY || "",
     sent: [],
@@ -1188,6 +1369,10 @@ function newsCfg() {
   if (!Array.isArray(n.sent)) n.sent = [];
   if (!Array.isArray(n.history)) n.history = [];
   if (!n.apiKey && process.env.GEMINI_API_KEY) n.apiKey = process.env.GEMINI_API_KEY;
+  // Eski (world-news-bot) sozlamalarini yangi botga ko'chirish
+  const legacyTimes = ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"];
+  if (n.channel === "@WORLD_NEWS_1M") n.channel = d.channel;
+  if (n.times.join(",") === legacyTimes.join(",")) n.times = d.times.slice();
   return n;
 }
 async function newsTg(method, params = {}, timeoutMs = 35e3) {
@@ -1517,29 +1702,272 @@ var server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === "/api/stats") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({
+    jsonOut(res, 200, {
       users: Object.keys(db.users).length,
       channels: db.channels.length,
       igProfiles: db.igProfiles.length,
       activeOrders: db.orders.filter((o) => o.status === "active").length,
       openTasks: db.tasks.filter((t) => OPEN.has(t.status)).length,
       complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
-      settings: { ...S(), telegramBotToken: void 0 }
-    }));
+      bots: botsList().map((b) => ({ id: b.id, role: b.role, username: b.username, online: botRuns.has(b.id) })),
+      settings: { ...S(), telegramBotToken: void 0, bots: void 0, news: void 0 }
+    });
     return;
   }
-  let file = path.normalize(path.join(DIST, url.pathname === "/" ? "index.html" : url.pathname));
-  if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, "index.html");
-  fs.readFile(file, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      res.end("Not found");
+  if (url.pathname.startsWith("/api/admin/")) {
+    const route = url.pathname.slice("/api/admin/".length);
+    const isPost = req.method === "POST";
+    if (isPost && !sameOrigin(req)) {
+      jsonOut(res, 403, { ok: false, error: "Origin rad etildi" });
       return;
     }
-    res.writeHead(200, { "content-type": MIME[path.extname(file)] || "application/octet-stream" });
-    res.end(data);
-  });
+    const run = async () => {
+      const b = isPost ? await readJsonBody(req) : {};
+      switch (route) {
+        case "overview": {
+          return {
+            now: uzbNow().full,
+            storage: STORAGE,
+            dbState: DATABASE_URL ? "Postgres" : "fayl",
+            uptime: uptimeStr(),
+            counts: {
+              users: Object.keys(db.users).length,
+              channels: db.channels.length,
+              ordersActive: db.orders.filter((o) => o.status === "active").length,
+              tasksOpen: db.tasks.filter((t) => OPEN.has(t.status)).length,
+              complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
+              transactions: db.transactions.length
+            },
+            bots: botsList().map(botView),
+            recentUsers: Object.values(db.users).sort((x, y) => String(y.registeredAt).localeCompare(String(x.registeredAt))).slice(0, 8).map((u) => ({
+              telegramId: u.telegramId,
+              username: u.username || "",
+              displayName: u.displayName,
+              credits: u.credits.available,
+              registeredAt: u.registeredAt
+            }))
+          };
+        }
+        case "bots": {
+          if (!isPost) return { bots: botsList().map(botView) };
+          const action = String(b.action || "");
+          if (action === "add") {
+            const token = String(b.token || "").trim();
+            if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token)) throw new Error("Token formati noto'g'ri (123456789:AA...)");
+            if (botsList().some((x) => x.token === token)) throw new Error("Bu token allaqachon qo'shilgan");
+            const me = await tgWith({ token }, "getMe", {}, 15e3);
+            if (!me.ok) throw new Error("Telegram tokenni qabul qilmadi: " + (me.description || "xato"));
+            const bot = {
+              id: nid("bot"),
+              token,
+              role: "worker",
+              enabled: true,
+              offset: 0,
+              username: me.result.username || "",
+              displayName: me.result.first_name || "",
+              botId: me.result.id,
+              createdAt: nowStr()
+            };
+            botsList().push(bot);
+            save();
+            await startBotLoop(bot);
+            return { username: bot.username, bots: botsList().map(botView) };
+          }
+          if (action === "toggle") {
+            const bot = botById(String(b.id || ""));
+            if (!bot) throw new Error("Bot topilmadi");
+            if (bot.role === "main" && !b.enabled) throw new Error("Asosiy botni o'chirib bo'lmaydi (u env orqali boshqariladi)");
+            bot.enabled = !!b.enabled;
+            save();
+            if (bot.enabled) await startBotLoop(bot);
+            else stopBotLoop(bot.id);
+            return { bots: botsList().map(botView) };
+          }
+          if (action === "delete") {
+            const bot = botById(String(b.id || ""));
+            if (!bot) throw new Error("Bot topilmadi");
+            if (bot.role === "main") throw new Error("Asosiy botni o'chirib bo'lmaydi");
+            stopBotLoop(bot.id);
+            S().bots = botsList().filter((x) => x.id !== bot.id);
+            save();
+            return { bots: botsList().map(botView) };
+          }
+          if (action === "restart") {
+            await restartBots();
+            return { bots: botsList().map(botView) };
+          }
+          throw new Error("Noma'lum amal: " + action);
+        }
+        case "users": {
+          const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+          let list = Object.values(db.users);
+          if (q) list = list.filter((u) => String(u.displayName || "").toLowerCase().includes(q) || String(u.username || "").toLowerCase().includes(q) || String(u.telegramId).includes(q));
+          const total = list.length;
+          list = list.sort((x, y) => String(y.registeredAt).localeCompare(String(x.registeredAt))).slice(0, limit);
+          return {
+            total,
+            items: list.map((u) => ({
+              telegramId: u.telegramId,
+              username: u.username || "",
+              displayName: u.displayName,
+              credits: u.credits.available,
+              reserved: u.credits.reserved,
+              completedTasksCount: u.completedTasksCount || 0,
+              status: u.status || "active",
+              registeredAt: u.registeredAt
+            }))
+          };
+        }
+        case "user": {
+          const t = db.users[String(b.telegramId || "")];
+          if (!t) throw new Error("Foydalanuvchi topilmadi");
+          if (b.action === "credits") {
+            const n = Number(b.amount);
+            if (!Number.isFinite(n) || !n) throw new Error("Kredit soni noto'g'ri");
+            t.credits.available = Math.max(0, t.credits.available + n);
+            addTx(t, n, "admin_adjustment", "Admin panel");
+            notify(t, `\u{1F4B0} Hisobingiz ${n > 0 ? "+" : ""}${n} kreditga o'zgartirildi.`);
+            save();
+            return { balance: t.credits.available };
+          }
+          if (b.action === "block" || b.action === "unblock") {
+            t.status = b.action === "block" ? "blocked" : "active";
+            save();
+            return { status: t.status };
+          }
+          throw new Error("Noma'lum amal");
+        }
+        case "channels": {
+          return {
+            items: db.channels.slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt))).map((c) => ({
+              id: c.id,
+              title: c.title,
+              username: c.username,
+              ownerName: c.ownerName,
+              verifiedSubscribers: c.verifiedSubscribers,
+              pendingSubscriptions: c.pendingSubscriptions,
+              botHasAdminRights: !!c.botHasAdminRights,
+              createdAt: c.createdAt
+            }))
+          };
+        }
+        case "channel": {
+          const c = db.channels.find((x) => x.id === String(b.id || ""));
+          if (!c) throw new Error("Kanal topilmadi");
+          db.channels = db.channels.filter((x) => x.id !== c.id);
+          for (const t of db.tasks) if (t.destinationId === c.id && OPEN.has(t.status)) t.status = "CANCELLED";
+          save();
+          return { deleted: c.title };
+        }
+        case "orders": {
+          const all = db.orders.slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)));
+          return {
+            total: all.length,
+            active: all.filter((o) => o.status === "active").length,
+            items: all.slice(0, 60)
+          };
+        }
+        case "order": {
+          const o = db.orders.find((x) => x.id === String(b.id || ""));
+          if (!o) throw new Error("Buyurtma topilmadi");
+          if (o.status !== "active") throw new Error("Bu buyurtma allaqachon yopilgan");
+          return cancelOrderAdmin(o);
+        }
+        case "tasks": {
+          const byStatus = {};
+          for (const t of db.tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+          const items = db.tasks.slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt))).slice(0, 60).map((t) => {
+            const u = userById(t.assignedTo);
+            return { id: t.id, destinationTitle: t.destinationTitle, userName: u ? u.displayName : t.assignedTo, status: t.status, createdAt: t.createdAt };
+          });
+          return { byStatus, items };
+        }
+        case "complaints": {
+          if (!isPost) {
+            const items = db.complaints.slice().reverse();
+            return { items, newCount: items.filter((c) => c.status === "NEW").length };
+          }
+          const c = db.complaints.find((x) => x.ticketId === String(b.ticketId || ""));
+          if (!c) throw new Error("Shikoyat topilmadi");
+          const text = String(b.text || "").trim();
+          if (!text) throw new Error("Javob matni bo'sh");
+          c.adminResponse = text;
+          c.status = "ANSWERED";
+          c.updatedAt = nowStr();
+          notify(userById(c.userId), `\u{1F6DF} <b>${c.ticketId}</b> bo'yicha javob:\n\n${esc(text)}`);
+          save();
+          return { ticketId: c.ticketId };
+        }
+        case "sponsors": {
+          if (!isPost) return { items: db.sponsors };
+          if (b.action === "del") {
+            db.sponsors = db.sponsors.filter((s) => s.username !== String(b.username || "").replace(/^@/, ""));
+            save();
+            return { items: db.sponsors };
+          }
+          const uname = String(b.username || "").trim().replace(/^@/, "").replace(/^https?:\/\/t\.me\//i, "");
+          if (!uname) throw new Error("Username kiriting");
+          const info = await tg("getChat", { chat_id: "@" + uname }, 15e3);
+          if (!info.ok) throw new Error("Kanal topilmadi: " + (info.description || ""));
+          if (!await checkBotAdmin(info.result.id)) throw new Error("Bot bu kanalda administrator emas");
+          if (db.sponsors.some((s) => s.username === uname)) throw new Error("Allaqachon qo'shilgan");
+          db.sponsors.push({ id: nid("sp"), title: info.result.title, username: uname, channelId: String(info.result.id), url: "https://t.me/" + uname, isMandatory: true, isActive: true, subscribersCount: 0, createdAt: nowStr() });
+          save();
+          return { items: db.sponsors };
+        }
+        case "settings": {
+          const s = S();
+          if (!isPost) {
+            const { news, bots, ...rest } = s;
+            return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
+          }
+          for (const k of ["creditRewardSignup", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral"]) {
+            if (b[k] === void 0) continue;
+            const n = Number(b[k]);
+            if (!Number.isFinite(n) || n < 0) throw new Error(k + " noto'g'ri son");
+            s[k] = Math.round(n);
+          }
+          for (const k of ["isBotPaused", "areOrdersFrozen", "isInstagramEnabled", "hourlyNotificationsEnabled"]) {
+            if (b[k] !== void 0) s[k] = !!b[k];
+          }
+          save();
+          return { saved: true };
+        }
+        case "broadcast": {
+          if (!isPost) throw new Error("POST kerak");
+          const text = String(b.text || "").trim();
+          if (!text) throw new Error("Matn bo'sh");
+          const list = Object.values(db.users).filter((x) => x.status !== "blocked" && x.chatId);
+          (async () => {
+            let ok = 0;
+            for (const x of list) {
+              const r = await sendWith(primaryBot(), x.chatId, esc(text), {});
+              if (r.ok) ok++;
+              await new Promise((r2) => setTimeout(r2, 50));
+            }
+            console.log(`Broadcast: ${ok}/${list.length}`);
+          })().catch((e) => console.error("Broadcast xatosi:", e.message));
+          return { count: list.length };
+        }
+      }
+      throw new Error("Noma'lum endpoint: " + route);
+    };
+    run().then((out) => jsonOut(res, 200, { ok: true, ...out })).catch((e) => jsonOut(res, 400, { ok: false, error: e.message }));
+    return;
+  }
+  if (url.pathname === "/" || url.pathname === "/panel") {
+    if (!PANEL_PAGE) {
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      res.end("panel.html topilmadi");
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(PANEL_PAGE);
+    return;
+  }
+  res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  res.end("Not found");
 });
 function startKeepAlive() {
   if (process.env.KEEP_ALIVE === "0") return;
@@ -1554,31 +1982,61 @@ function startKeepAlive() {
   }, every);
   console.log(`Keep-alive yoqilgan: ${target} (har ${Math.round(every / 1e3)}s)`);
 }
-async function startBot() {
-  if (!TOKEN) {
-    console.error("TELEGRAM_BOT_TOKEN o'rnatilmagan - faqat veb panel ishlaydi.");
-    return;
+async function startBotLoop(bot) {
+  if (!bot || !bot.enabled || !bot.token) return false;
+  if (botRuns.has(bot.id)) return true;
+  const stopToken = Symbol("stop");
+  botRuns.set(bot.id, stopToken);
+  const me = await tgWith(bot, "getMe");
+  if (!me.ok) {
+    botRuns.delete(bot.id);
+    bot.lastError = me.description || "getMe xatosi";
+    bot.online = false;
+    console.error(`[${botName(bot)}] ishga tushmadi:`, bot.lastError);
+    save();
+    return false;
   }
-  for (let attempt = 1; ; attempt++) {
-    const me = await tg("getMe");
-    if (me.ok) {
-      BOT_ID = me.result.id;
-      S().botId = String(BOT_ID);
-      S().botUsername = me.result.username;
-      S().botDisplayName = me.result.first_name;
-      await tg("deleteWebhook", { drop_pending_updates: false });
-      await tg("setMyCommands", { commands: [{ command: "start", description: "Botni ishga tushirish" }, { command: "cancel", description: "Joriy amalni bekor qilish" }] });
-      save();
-      console.log(`Bot @${me.result.username} ishga tushdi (long polling)`);
-      setInterval(() => hourlyReport().catch((e) => console.error(e)), 6e4);
-      setInterval(() => maintenance().catch((e) => console.error(e)), 15 * 6e4);
-      pollLoop();
-      return;
-    }
-    console.error(`Bot ishga tushmadi (urinish ${attempt}):`, me.description || (me.network ? "tarmoq xatosi" : "noma'lum xato"));
-    console.error("30 soniyadan keyin qayta urinamiz. Veb panel va /healthz ishlashda davom etadi.");
-    await new Promise((res) => setTimeout(res, 3e4));
+  bot.username = me.result.username || "";
+  bot.displayName = me.result.first_name || "";
+  bot.botId = me.result.id;
+  bot.online = true;
+  bot.lastError = "";
+  bot.startedAt = nowStr();
+  if (bot.role === "main") {
+    BOT_ID = me.result.id;
+    S().botId = String(me.result.id);
+    S().botUsername = bot.username;
+    S().botDisplayName = bot.displayName;
   }
+  await tgWith(bot, "deleteWebhook", { drop_pending_updates: false });
+  await tgWith(bot, "setMyCommands", { commands: [{ command: "start", description: "Botni ishga tushirish" }, { command: "cancel", description: "Joriy amalni bekor qilish" }] });
+  // Eski (offline davrdagi) xabarlar oqimini tashlab yuborish
+  if (!bot.offset) {
+    const skip = await tgWith(bot, "getUpdates", { offset: -1, limit: 1, timeout: 0 });
+    if (skip.ok && skip.result.length) bot.offset = skip.result[0].update_id + 1;
+  }
+  save();
+  console.log(`Bot ${botName(bot)} ishga tushdi (long polling${bot.role === "main" ? "" : ", ishchi bot"})`);
+  pollLoop(bot, stopToken).catch((e) => console.error(`[${botName(bot)}] pollLoop xatosi:`, e));
+  return true;
+}
+function stopBotLoop(id) {
+  botRuns.delete(id);
+  const b = botById(id);
+  if (b) b.online = false;
+}
+async function startAllBots() {
+  const list = botsList().filter((b) => b.enabled && b.token);
+  for (const b of list) {
+    if (botRuns.has(b.id)) continue;
+    await startBotLoop(b);
+  }
+  if (!list.length) console.error("Bot tokeni yo'q - faqat veb panel ishlaydi. Panelda bot tokenini qo'shing.");
+}
+async function restartBots() {
+  for (const id of [...botRuns.keys()]) stopBotLoop(id);
+  await new Promise((r) => setTimeout(r, 1200));
+  await startAllBots();
 }
 var shuttingDown = false;
 async function shutdown(sig) {
@@ -1603,8 +2061,30 @@ async function shutdown(sig) {
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => {
   shutdown(sig);
 });
+// Asosiy botni (env tokeni) bazadagi ro'yxatga bir marta yozib qo'yamiz.
+function botsInit() {
+  const list = botsList();
+  const env = (TOKEN || "").trim();
+  if (env) {
+    let b = list.find((x) => x.token === env);
+    if (!b) {
+      b = { id: "bot-main", token: env, role: "main", enabled: true, createdAt: nowStr() };
+      list.unshift(b);
+    }
+    b.role = "main";
+    b.enabled = true;
+  }
+  for (const b of list) {
+    if (b.role === "main") continue;
+    b.role = "worker";
+    if (b.offset === void 0) b.offset = 0;
+  }
+  save();
+  return list;
+}
 async function main() {
   await openStore();
+  botsInit();
   server.on("error", (e) => {
     console.error("HTTP server xatosi:", e.message);
     process.exit(1);
@@ -1612,7 +2092,14 @@ async function main() {
   server.listen(PORT, HOST, () => console.log(`Veb server: http://${HOST}:${PORT} (saqlash: ${STORAGE})`));
   startKeepAlive();
   startNewsScheduler();
-  await startBot();
+  setInterval(() => hourlyReport().catch((e) => console.error(e)), 6e4);
+  setInterval(() => maintenance().catch((e) => console.error(e)), 15 * 6e4);
+  setInterval(() => {
+    for (const b of botsList()) {
+      if (b.enabled && b.token && !botRuns.has(b.id)) startBotLoop(b).catch((e) => console.error(e));
+    }
+  }, 3e4);
+  await startAllBots();
 }
 main().catch((e) => {
   console.error("Ishga tushirishda halokatli xato:", e);

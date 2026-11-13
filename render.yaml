@@ -19,6 +19,15 @@ services:
       # Admin Telegram ID'lar, vergul bilan: 123456789,987654321
       - key: ADMIN_IDS
         sync: false
+      # Yangiliklar boti (@Dunyo_Yangiliklari_Texno_bot)
+      - key: NEWS_BOT_TOKEN
+        sync: false
+      # Gemini API kaliti
+      - key: GEMINI_API_KEY
+        sync: false
+      # Doimiy saqlash (Postgres) — bo'sh bo'lsa fayl rejimi
+      - key: DATABASE_URL
+        sync: false
       # Veb panel paroli — Render avtomatik generatsiya qiladi,
       # Dashboard -> Environment bo'limidan ko'rish mumkin.
       - key: ADMIN_PASSWORD
