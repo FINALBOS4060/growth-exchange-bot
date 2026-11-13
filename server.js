@@ -462,7 +462,17 @@ var STR = {
     set_title: "⚙️ <b>Sozlamalar</b>\n\n🌐 Til: {lang}\n\n🔔 <b>Bildirishnomalar</b>\nSoatlik hisobot: {hourly}\n• Yangi obunachilar: {sub}\n• Referal bonuslar: {ref}\n• Buyurtma holati: {ord}\n• Texnik xabarlar: {tech}\n\nKerakli bo‘limni bosing — yoqiladi yoki o‘chadi.",
     set_hourly_on: "🔕 Hisobotni o‘chirish",
     set_hourly_off: "🔔 Hisobotni yoqish",
-    help: "🛟 <b>Yordam — qisqa qo‘llanma</b>\n\n📢 <b>Kanallarim</b> — kanal ulash, kanal statistikasi, obunachi buyurtish.\n📋 <b>Vazifalar</b> — 10 talik kanallar; obuna bo‘lib “✅ Obuna bo‘ldim” bosing.\n🛒 <b>Buyurtmalarim</b> — buyurtmalar holati; bekor qilsangiz kreditingiz qaytadi.\n📸 <b>Instagram</b> — profil ulash (rasmiy tekshiruv yo‘q, tasdiqlash o‘zingizga asoslanadi).\n👥 <b>Referal</b> — taklif havolasi va bonusni kanalga yo‘naltirish.\n📊 <b>Statistika</b> — balans, sarf, bajarilgan vazifalar.\n⚙️ <b>Sozlamalar</b> — til va bildirishnomalar.\n\n<b>Qoidalar:</b> obuna haqiqiy tekshiriladi; obunadan chiqsangiz kredit qaytarib olinadi; soxta harakatda hisob bloklanadi; kanal uchun bot administrator bo‘lishi shart.",
+    set_title: "⚙️ <b>Sozlamalar</b>\n\n👤 {name} · ID: <code>{id}</code>\n\n🌐 Til: {lang}\n💰 Balans: <b>{bal}</b> kredit\n\n🔔 <b>Bildirishnomalar</b>\n• Soatlik hisobot: {hourly}\n• Yangi obunachilar: {sub}\n• Referal bonuslar: {ref}\n• Buyurtma holati: {ord}\n• Texnik xabarlar: {tech}\n\nKerakli tugmani bosing — darhol saqlanadi.",
+    set_rates_btn: "📊 Kredit qoidalari",
+    set_info_btn: "👤 Ma’lumotlarim",
+    set_support_btn: "🛟 Adminga murojaat",
+    set_all_on: "🔔 Hammasini yoqish",
+    set_all_off: "🔕 Hammasini o‘chirish",
+    set_back: "⬅️ Orqaga",
+    set_rates: "📊 <b>Kredit qoidalari</b>\n\n• 1 tasdiqlangan obuna = <b>{tg}</b> kredit\n• 1 obunachi (buyurtma) = <b>{tg}</b> kredit\n• 1 faol referal = <b>{ref}</b> kredit\n• Birinchi kanal uchun sovg‘a = <b>{link}</b> kredit\n• Ro‘yxatdan o‘tish sovg‘asi = <b>{signup}</b> kredit\n\nKredit — pul emas, bot ichidagi hisob birligi. Qiymatlarni admin o‘zgartiradi.",
+    set_info: "👤 <b>Ma’lumotlarim</b>\n\nIsm: {name}\nID: <code>{id}</code>\nUsername: {username}\nTil: {lang}\nRo‘yxatdan: {date}\n\n💰 Balans: <b>{a}</b> · 🔒 Band: {r}\n💸 Sarf: {s} · ↩️ Qaytim: {ref}\n\n📢 Kanallar: {ch} · 📸 Instagram: {ig}\n✅ Vazifalar: {done} · 🛒 Faol buyurtma: {ord}\n👥 Referallar: {refs} · 🛟 Murojaatlar: {tickets}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
+    set_support_prompt: "🛟 <b>Adminga murojaat</b>\n\nMuammo yoki taklifingizni bitta xabar bilan yozing — javob shu chatga keladi.\n\nBekor qilish: /cancel",
+    help: "🛟 <b>Yordam — qisqa qo‘llanma</b>\n\n📢 <b>Kanallarim</b> — kanal ulash, kanal statistikasi, obunachi buyurtish.\n📋 <b>Vazifalar</b> — 10 talik kanallar; obuna bo‘lib “✅ Obuna bo‘ldim” bosing.\n🛒 <b>Buyurtmalarim</b> — buyurtmalar holati; bekor qilsangiz kreditingiz qaytadi.\n📸 <b>Instagram</b> — profil ulash (rasmiy tekshiruv yo‘q, tasdiqlash o‘zingizga asoslanadi).\n👥 <b>Referal</b> — taklif havolasi va bonusni kanalga yo‘naltirish.\n📊 <b>Statistika</b> — balans, sarf, bajarilgan vazifalar.\n⚙️ <b>Sozlamalar</b> — til, bildirishnomalar, kredit qoidalari, ma’lumotlarim, adminga murojaat.\n\n<b>Qoidalar:</b> obuna haqiqiy tekshiriladi; obunadan chiqsangiz kredit qaytarib olinadi; soxta harakatda hisob bloklanadi; kanal uchun bot administrator bo‘lishi shart.",
     cmp_choose: "Muammo turini tanlang:",
     cmp_enter: "📝 <b>{cat}</b>\n\nMuammoni batafsil yozing. Bekor qilish: /cancel",
     cmp_ok: "🛟 Murojaat qabul qilindi!\nBilet: <b>{ticket}</b>\nAdminlar tez orada javob beradi.",
@@ -518,7 +528,17 @@ var STR = {
     set_title: "⚙️ <b>Настройки</b>\n\n🌐 Язык: {lang}\n\n🔔 <b>Уведомления</b>\nЕжечасный отчёт: {hourly}\n• Новые подписчики: {sub}\n• Реферальные бонусы: {ref}\n• Статус заказов: {ord}\n• Технические: {tech}",
     set_hourly_on: "🔕 Отключить отчёт",
     set_hourly_off: "🔔 Включить отчёт",
-    help: "🛟 <b>Помощь — краткое руководство</b>\n\n📢 <b>Мои каналы</b> — добавить канал, статистика, заказ подписчиков.\n📋 <b>Задания</b> — 10 каналов; подпишитесь и нажмите “✅ Я подписался”.\n🛒 <b>Мои заказы</b> — статус заказов; при отмене кредиты возвращаются.\n📸 <b>Instagram</b> — добавление профиля (официальной проверки нет).\n👥 <b>Рефералы</b> — ссылка и направление бонуса на канал.\n📊 <b>Статистика</b> — баланс, расход, задания.\n⚙️ <b>Настройки</b> — язык и уведомления.\n\n<b>Правила:</b> подписка проверяется; при отписке кредиты списываются; за обман аккаунт блокируется; бот должен быть администратором канала.",
+    set_title: "⚙️ <b>Настройки</b>\n\n👤 {name} · ID: <code>{id}</code>\n\n🌐 Язык: {lang}\n💰 Баланс: <b>{bal}</b> кредитов\n\n🔔 <b>Уведомления</b>\n• Ежечасный отчёт: {hourly}\n• Новые подписчики: {sub}\n• Реферальные бонусы: {ref}\n• Статус заказов: {ord}\n• Технические: {tech}\n\nНажмите нужную кнопку — сохраняется сразу.",
+    set_rates_btn: "📊 Правила кредитов",
+    set_info_btn: "👤 Мои данные",
+    set_support_btn: "🛟 Написать админу",
+    set_all_on: "🔔 Включить всё",
+    set_all_off: "🔕 Отключить всё",
+    set_back: "⬅️ Назад",
+    set_rates: "📊 <b>Правила кредитов</b>\n\n• 1 подтверждённая подписка = <b>{tg}</b> кредитов\n• 1 подписчик (заказ) = <b>{tg}</b> кредитов\n• 1 активный реферал = <b>{ref}</b> кредитов\n• Бонус за первый канал = <b>{link}</b> кредитов\n• Бонус за регистрацию = <b>{signup}</b> кредитов\n\nКредит — не деньги, а внутренняя единица бота. Значения меняет администратор.",
+    set_info: "👤 <b>Мои данные</b>\n\nИмя: {name}\nID: <code>{id}</code>\nUsername: {username}\nЯзык: {lang}\nРегистрация: {date}\n\n💰 Баланс: <b>{a}</b> · 🔒 Резерв: {r}\n💸 Израсходовано: {s} · ↩️ Возвращено: {ref}\n\n📢 Каналов: {ch} · 📸 Instagram: {ig}\n✅ Заданий: {done} · 🛒 Активных заказов: {ord}\n👥 Рефералов: {refs} · 🛟 Обращений: {tickets}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
+    set_support_prompt: "🛟 <b>Написать администратору</b>\n\nОпишите проблему или предложение одним сообщением — ответ придёт в этот чат.\n\nОтмена: /cancel",
+    help: "🛟 <b>Помощь — краткое руководство</b>\n\n📢 <b>Мои каналы</b> — добавить канал, статистика, заказ подписчиков.\n📋 <b>Задания</b> — 10 каналов; подпишитесь и нажмите “✅ Я подписался”.\n🛒 <b>Мои заказы</b> — статус заказов; при отмене кредиты возвращаются.\n📸 <b>Instagram</b> — добавление профиля (официальной проверки нет).\n👥 <b>Рефералы</b> — ссылка и направление бонуса на канал.\n📊 <b>Статистика</b> — баланс, расход, задания.\n⚙️ <b>Настройки</b> — язык, уведомления, правила кредитов, мои данные, связь с админом.\n\n<b>Правила:</b> подписка проверяется; при отписке кредиты списываются; за обман аккаунт блокируется; бот должен быть администратором канала.",
     cmp_choose: "Выберите тип проблемы:",
     cmp_enter: "📝 <b>{cat}</b>\n\nОпишите проблему подробно. Отмена: /cancel",
     cmp_ok: "🛟 Обращение принято!\nТикет: <b>{ticket}</b>\nАдминистратор скоро ответит.",
@@ -574,7 +594,17 @@ var STR = {
     set_title: "⚙️ <b>Settings</b>\n\n🌐 Language: {lang}\n\n🔔 <b>Notifications</b>\nHourly report: {hourly}\n• New subscribers: {sub}\n• Referral bonuses: {ref}\n• Order status: {ord}\n• Technical: {tech}",
     set_hourly_on: "🔕 Turn off report",
     set_hourly_off: "🔔 Turn on report",
-    help: "🛟 <b>Help — quick guide</b>\n\n📢 <b>My channels</b> — add a channel, stats, order subscribers.\n📋 <b>Tasks</b> — 10 channels; subscribe and press “✅ I subscribed”.\n🛒 <b>My orders</b> — order status; credits are refunded on cancel.\n📸 <b>Instagram</b> — add a profile (no official verification).\n👥 <b>Referrals</b> — your link and bonus allocation.\n📊 <b>Statistics</b> — balance, spending, tasks.\n⚙️ <b>Settings</b> — language and notifications.\n\n<b>Rules:</b> subscriptions are verified; unsubscribing revokes credits; cheating blocks the account; the bot must be a channel administrator.",
+    set_title: "⚙️ <b>Settings</b>\n\n👤 {name} · ID: <code>{id}</code>\n\n🌐 Language: {lang}\n💰 Balance: <b>{bal}</b> credits\n\n🔔 <b>Notifications</b>\n• Hourly report: {hourly}\n• New subscribers: {sub}\n• Referral bonuses: {ref}\n• Order status: {ord}\n• Technical: {tech}\n\nTap a button to change it — saved instantly.",
+    set_rates_btn: "📊 Credit rules",
+    set_info_btn: "👤 My data",
+    set_support_btn: "🛟 Message admin",
+    set_all_on: "🔔 Turn all on",
+    set_all_off: "🔕 Turn all off",
+    set_back: "⬅️ Back",
+    set_rates: "📊 <b>Credit rules</b>\n\n• 1 verified subscription = <b>{tg}</b> credits\n• 1 subscriber (order) = <b>{tg}</b> credits\n• 1 active referral = <b>{ref}</b> credits\n• First channel bonus = <b>{link}</b> credits\n• Signup bonus = <b>{signup}</b> credits\n\nA credit is not money — it is the bot's internal unit. Values are changed by the administrator.",
+    set_info: "👤 <b>My data</b>\n\nName: {name}\nID: <code>{id}</code>\nUsername: {username}\nLanguage: {lang}\nRegistered: {date}\n\n💰 Balance: <b>{a}</b> · 🔒 Reserved: {r}\n💸 Spent: {s} · ↩️ Refunded: {ref}\n\n📢 Channels: {ch} · 📸 Instagram: {ig}\n✅ Tasks: {done} · 🛒 Active orders: {ord}\n👥 Referrals: {refs} · 🛟 Requests: {tickets}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
+    set_support_prompt: "🛟 <b>Message the administrator</b>\n\nDescribe the problem or suggestion in one message — the reply arrives in this chat.\n\nCancel: /cancel",
+    help: "🛟 <b>Help — quick guide</b>\n\n📢 <b>My channels</b> — add a channel, stats, order subscribers.\n📋 <b>Tasks</b> — 10 channels; subscribe and press “✅ I subscribed”.\n🛒 <b>My orders</b> — order status; credits are refunded on cancel.\n📸 <b>Instagram</b> — add a profile (no official verification).\n👥 <b>Referrals</b> — your link and bonus allocation.\n📊 <b>Statistics</b> — balance, spending, tasks.\n⚙️ <b>Settings</b> — language, notifications, credit rules, my data, contact admin.\n\n<b>Rules:</b> subscriptions are verified; unsubscribing revokes credits; cheating blocks the account; the bot must be a channel administrator.",
     cmp_choose: "Choose the problem type:",
     cmp_enter: "📝 <b>{cat}</b>\n\nDescribe the problem. Cancel: /cancel",
     cmp_ok: "🛟 Request accepted!\nTicket: <b>{ticket}</b>\nAn administrator will reply soon.",
@@ -582,6 +612,11 @@ var STR = {
     lang_names: "English"
   }
 };
+function notifOn(u, key) {
+  if (!u) return false;
+  if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
+  return u.notif[key] !== false;
+}
 function langOf(u) {
   const l = u && u.language;
   return STR[l] ? l : "uz";
@@ -1198,22 +1233,60 @@ async function showHelp(u, chat) {
   ]));
 }
 async function showSettings(u, chat) {
-  const mark = (ok) => (ok ? "✅" : "⛔");
-  const langName = { uz: "🇺🇿 O‘zbekcha", ru: "🇷🇺 Русский", en: "🇬🇧 English" }[langOf(u)];
+  const mark = (ok) => (ok ? "\u2705" : "\u26D4");
+  const langName = { uz: "\u{1F1FA}\u{1F1FF} O\u2018zbekcha", ru: "\u{1F1F7}\u{1F1FA} \u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "\u{1F1EC}\u{1F1E7} English" }[langOf(u)];
+  const c = u.credits || {};
   return send(chat, T(u, "set_title", {
+    name: esc(u.displayName || ""),
+    id: u.telegramId,
     lang: langName,
-    hourly: u.notifications ? "✅" : "⛔",
+    bal: c.available || 0,
+    hourly: u.notifications ? "\u2705" : "\u26D4",
     sub: mark(notifOn(u, "subscribers")),
     ref: mark(notifOn(u, "referrals")),
     ord: mark(notifOn(u, "orders")),
     tech: mark(notifOn(u, "technical"))
   }), inline([
-    [{ text: T(u, "langs"), callback_data: "noop:0" }],
-    [{ text: "🇺🇿 O‘zbekcha", callback_data: "lang:uz" }, { text: "🇷🇺 Русский", callback_data: "lang:ru" }, { text: "🇬🇧 English", callback_data: "lang:en" }],
-    [{ text: u.notifications ? T(u, "set_hourly_on") : T(u, "set_hourly_off"), callback_data: "notif" }],
-    [{ text: `${T(u, "b_tasks").slice(2)} ${mark(notifOn(u, "subscribers"))}`, callback_data: "nt:subscribers" }, { text: `Ref ${mark(notifOn(u, "referrals"))}`, callback_data: "nt:referrals" }],
-    [{ text: `Order ${mark(notifOn(u, "orders"))}`, callback_data: "nt:orders" }, { text: `Tech ${mark(notifOn(u, "technical"))}`, callback_data: "nt:technical" }]
+    [{ text: "\u{1F1FA}\u{1F1FF} O\u2018zbekcha", callback_data: "lang:uz" }, { text: "\u{1F1F7}\u{1F1FA} \u0420\u0443\u0441\u0441\u043a\u0438\u0439", callback_data: "lang:ru" }, { text: "\u{1F1EC}\u{1F1E7} English", callback_data: "lang:en" }],
+    [{ text: (u.notifications ? T(u, "set_hourly_on") : T(u, "set_hourly_off")) + " \u2014 " + (u.notifications ? "\u2705" : "\u26D4"), callback_data: "notif" }],
+    [{ text: T(u, "b_tasks") + " " + mark(notifOn(u, "subscribers")), callback_data: "nt:subscribers" }, { text: T(u, "b_referrals") + " " + mark(notifOn(u, "referrals")), callback_data: "nt:referrals" }],
+    [{ text: T(u, "b_orders") + " " + mark(notifOn(u, "orders")), callback_data: "nt:orders" }, { text: "\u{1F6E0} " + mark(notifOn(u, "technical")), callback_data: "nt:technical" }],
+    [{ text: T(u, "set_all_on"), callback_data: "ntall:on" }, { text: T(u, "set_all_off"), callback_data: "ntall:off" }],
+    [{ text: T(u, "set_rates_btn"), callback_data: "setrates" }, { text: T(u, "set_info_btn"), callback_data: "setinfo" }],
+    [{ text: T(u, "set_support_btn"), callback_data: "setsupport" }]
   ]));
+}
+async function showCreditRules(u, chat) {
+  return send(chat, T(u, "set_rates", {
+    tg: S().creditRewardTelegram,
+    ref: S().creditRewardReferral,
+    link: S().creditRewardChannelLink,
+    signup: S().creditRewardSignup
+  }), inline([[{ text: T(u, "set_back"), callback_data: "settings" }]]));
+}
+async function showMyData(u, chat) {
+  const c = u.credits || {};
+  const refs = db.referrals.filter((r) => r.referrerId === u.id).length;
+  const tickets = db.complaints.filter((x) => x.userId === u.id).length;
+  return send(chat, T(u, "set_info", {
+    name: esc(u.displayName || ""),
+    id: u.telegramId,
+    username: u.username ? "@" + esc(u.username) : "\u2014",
+    lang: { uz: "O\u2018zbekcha", ru: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "English" }[langOf(u)],
+    date: u.registeredAt || "\u2014",
+    a: c.available || 0,
+    r: c.reserved || 0,
+    s: c.spent || 0,
+    ref: c.refunded || 0,
+    ch: channelsOf(u).length,
+    ig: db.igProfiles.filter((p) => p.userId === u.id).length,
+    done: u.completedTasksCount || 0,
+    ord: db.orders.filter((o) => o.userId === u.id && o.status === "active").length,
+    refs,
+    tickets,
+    bot: S().botUsername,
+    code: u.referralCode
+  }), inline([[{ text: T(u, "set_back"), callback_data: "settings" }]]));
 }
 var CATEGORIES = [
   "Obunachilar kamayib ketdi",
@@ -1517,6 +1590,7 @@ async function handleMessage(msg) {
     if (st.type === "order_qty") return prepareOrder(u, st.destId, parseInt(text.replace(/\D/g, ""), 10), chat);
     if (st.type === "ctl_code") return enterControllerCode(u, text, chat);
     if (st.type === "complaint") return submitComplaint(u, st.category, text, chat);
+    if (st.type === "support") return submitComplaint(u, "Adminga murojaat (sozlamalar)", text, chat);
   }
   switch (LABEL2KEY[text] || text) {
     case "channels":
@@ -1647,6 +1721,21 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       u.state = { type: "complaint", category: c, destinationId: dst.destinationId || null, destinationTitle: dst.destinationTitle || null };
       return send(chat, T(u, "cmp_enter", { cat: esc(c) }));
     }
+    case "ntall": {
+      if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
+      const allOn = String(arg) !== "off";
+      for (const k of ["subscribers", "referrals", "orders", "technical"]) u.notif[k] = allOn;
+      save();
+      return showSettings(u, chat);
+    }
+    case "setrates":
+      return showCreditRules(u, chat);
+    case "setinfo":
+      return showMyData(u, chat);
+    case "setsupport":
+      u.state = { type: "support" };
+      save();
+      return send(chat, T(u, "set_support_prompt"));
     case "notif":
       u.notifications = !u.notifications;
       save();
@@ -1988,17 +2077,38 @@ function audit(req, action, target, meta) {
 }
 function loginPage(err) {
   return `<!doctype html><html lang="uz"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirish</title>
-<style>body{background:#0b0f14;color:#dbe4ef;font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0}
-form{background:#121826;padding:28px;border-radius:14px;width:320px;border:1px solid #1f2937}
-h1{font-size:18px;margin:0 0 18px}label{font-size:12px;color:#8b9bb4;display:block;margin:12px 0 6px}
-input{width:100%;padding:10px;border-radius:8px;border:1px solid #263244;background:#0b0f14;color:#dbe4ef}
-button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:9px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
-.e{color:#f87171;font-size:13px;margin-top:12px;min-height:18px}</style></head><body>
-<form method="POST" action="/login"><h1>Obuna 2X — admin panel</h1>
-<label>Foydalanuvchi nomi</label><input name="username" autocomplete="username" required>
-<label>Parol</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Kirish</button><div class="e">${err || ""}</div></form></body></html>`;
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirish — Obuna 2X</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#080b11;color:#e8edf6;font-family:"Inter","Segoe UI",system-ui,-apple-system,Arial}
+body::before,body::after{content:"";position:fixed;border-radius:50%;filter:blur(70px);opacity:.5;pointer-events:none}
+body::before{width:420px;height:420px;left:-120px;top:-140px;background:radial-gradient(circle,#25438f,transparent 65%)}
+body::after{width:380px;height:380px;right:-120px;bottom:-140px;background:radial-gradient(circle,#4c2d8c,transparent 65%)}
+.card{position:relative;width:100%;max-width:380px;background:linear-gradient(180deg,#121826,#0e1320);border:1px solid #1d2634;border-radius:18px;padding:30px 28px 26px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#5b7cfa,#8b5cf6);display:grid;place-items:center;font-weight:800;font-size:15px;color:#fff;box-shadow:0 8px 22px rgba(91,124,250,.35);margin-bottom:16px}
+h1{font-size:19px;margin:0 0 6px;letter-spacing:-.2px}
+.hint{color:#8492a8;font-size:12.5px;margin:0 0 22px}
+label{display:block;font-size:11.5px;color:#93a1b8;font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin:14px 0 7px}
+input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #232d3f;background:#0a0f18;color:#e8edf6;font:inherit;transition:.16s}
+input:focus{outline:none;border-color:#5b7cfa;box-shadow:0 0 0 3px rgba(91,124,250,.18)}
+button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:10px;background:linear-gradient(180deg,#4b6cff,#2a4de0);color:#fff;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 8px 20px rgba(42,77,224,.3);transition:.16s}
+button:hover{filter:brightness(1.1)}
+.e{color:#fca5a5;font-size:13px;margin-top:14px;min-height:18px}
+.foot{margin-top:18px;color:#5f6c81;font-size:11.5px;text-align:center}
+</style></head><body>
+<form class="card" method="POST" action="/login">
+<div class="logo">2X</div>
+<h1>Obuna 2X</h1>
+<p class="hint">Administrator paneliga kirish</p>
+<label for="u">Foydalanuvchi nomi</label>
+<input id="u" name="username" autocomplete="username" autofocus required>
+<label for="p">Parol</label>
+<input id="p" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Kirish</button>
+<div class="e">${err || ""}</div>
+<div class="foot">Faqat administratorlar uchun</div>
+</form></body></html>`;
 }
 // --- Admin panel API yordamchilari ---
 var startedAt = Date.now();

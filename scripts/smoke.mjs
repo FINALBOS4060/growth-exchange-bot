@@ -26,7 +26,7 @@ await check("healthz", async () => {
 await check("login sahifasi", async () => {
   const r = await fetch(BASE + "/login");
   const t = await r.text();
-  if (r.status !== 200 || !t.includes("admin panel")) throw new Error("status " + r.status);
+  if (r.status !== 200 || !t.includes('name="password"') || !t.includes("Obuna 2X")) throw new Error("status " + r.status);
   return "200";
 });
 
