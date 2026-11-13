@@ -3932,7 +3932,9 @@ async function main() {
   // Avvaldan yig‘ilgan kreditlar ham buyurtmaga aylansin (bir marta ishga tushishda).
   if (S().autoOrderCredits) {
     let n = 0;
-    for (const u of db.users) if (autoOrderFromBalance(u)) n++;
+    // db.users — telegramId bo'yicha indekslangan siyrak massiv, shuning uchun
+    // Object.values (for...of butun uzunlikni aylanib chiqib osilib qoladi).
+    for (const u of Object.values(db.users)) if (u && autoOrderFromBalance(u)) n++;
     if (n) console.log(`Avtomatik buyurtma: ${n} foydalanuvchining balansi buyurtmaga aylantirildi`);
   }
   server.on("error", (e) => {
