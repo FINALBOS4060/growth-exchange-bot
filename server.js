@@ -461,6 +461,7 @@ var STR = {
     tasks_supply: "\nℹ️ Hozir tizimda {o} ta faol buyurtma, sizga mos {b} ta kanal bor — hammasi shu ro‘yxatda.",
     tasks_already: "\n\n♻️ Bu kanal(lar) sizda allaqachon bor. Yangi buyurtmalar tushganda shu yerda paydo bo‘ladi.",
     auto_order_note: "\n\n🛒 <b>Avtomatik buyurtma</b>\n{qty} kreditingiz “{title}” kanaliga obunachi buyurtmasiga aylantirildi.",
+    ch_order_hint: "\n\n💡 {a} kreditingiz bor. Kanalingizni tanlab “🛒 Buyurtma berish” orqali obunachi buyurtma qiling — miqdorni o‘zingiz kiritasiz.",
     tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nHar bir kanal qatorida: 🔗 havola va <b>⚠️ Shikoyat</b>.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
     tasks_btn_done: "✅ Obuna bo‘ldim",
     tasks_btn_refresh: "🔄 Yangilash",
@@ -471,6 +472,8 @@ var STR = {
     ch_code_in: "🔑 Kod kiritish",
     ch_back: "⬅️ Orqaga",
     ch_buy: "🛒 Buyurtma berish",
+    ch_buy_all: "⚡ Kreditimga buyurtma",
+    ord_all_low: "⚡ Bitta tugma bilan buyurtma uchun kamida 10 kredit kerak. Hozir: {max}.",
     ch_unlink: "🗑 Kanalni uzish",
     ch_controller: "nazoratchi",
     ord_title: "🛒 <b>Buyurtmalaringiz: {n} ta</b>\n{balance}\n\n{list}",
@@ -545,6 +548,7 @@ var STR = {
     tasks_supply: "\nℹ️ Сейчас в системе {o} активных заказов, для вас доступно {b} каналов — все они в списке.",
     tasks_already: "\n\n♻️ Этот канал уже есть в вашем списке. Новые задания появятся после новых заказов.",
     auto_order_note: "\n\n🛒 <b>Автоматический заказ</b>\n{qty} ваших кредитов превращены в заказ подписчиков для “{title}”.",
+    ch_order_hint: "\n\n💡 У вас {a} кредитов. Выберите канал и нажмите “🛒 Заказать” — количество вводите сами.",
     tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nВ строке каждого канала: 🔗 ссылка и <b>⚠️ Жалоба</b>.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
     tasks_btn_done: "✅ Я подписался",
     tasks_btn_refresh: "🔄 Обновить",
@@ -555,6 +559,8 @@ var STR = {
     ch_code_in: "🔑 Ввести код",
     ch_back: "⬅️ Назад",
     ch_buy: "🛒 Заказать",
+    ch_buy_all: "⚡ На все кредиты",
+    ord_all_low: "⚡ Для заказа одной кнопкой нужно минимум 10 кредитов. Сейчас: {max}.",
     ch_unlink: "🗑 Отключить канал",
     ch_controller: "контроллер",
     ord_title: "🛒 <b>Ваши заказы: {n}</b>\n{balance}\n\n{list}",
@@ -629,6 +635,7 @@ var STR = {
     tasks_supply: "\nℹ️ There are {o} active orders in the system and {b} channels available for you — all of them are listed.",
     tasks_already: "\n\n♻️ You already have this channel. New tasks will appear after new orders.",
     auto_order_note: "\n\n🛒 <b>Automatic order</b>\n{qty} of your credits were turned into a subscriber order for “{title}”.",
+    ch_order_hint: "\n\n💡 You have {a} credits. Pick a channel and press “🛒 Order” — you enter the quantity yourself.",
     tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nEach channel row has 🔗 link and <b>⚠️ Complaint</b>.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
     tasks_btn_done: "✅ I subscribed",
     tasks_btn_refresh: "🔄 Refresh",
@@ -639,6 +646,8 @@ var STR = {
     ch_code_in: "🔑 Enter code",
     ch_back: "⬅️ Back",
     ch_buy: "🛒 Place order",
+    ch_buy_all: "⚡ Use all credits",
+    ord_all_low: "⚡ A one-tap order needs at least 10 credits. You have: {max}.",
     ch_unlink: "🗑 Disconnect channel",
     ch_controller: "controller",
     ord_title: "🛒 <b>Your orders: {n}</b>\n{balance}\n\n{list}",
@@ -987,11 +996,17 @@ function autoOrderFromBalance(u) {
   const unit = Math.max(1, perSub());
   const qty = Math.floor((Number(u.credits.available) || 0) / unit);
   if (qty < 1) return null;
-  const ch = chs.find((c) => db.orders.some((o) => o.destinationId === c.id && o.status === "active")) || chs[0];
+  const activeOf = (c) => db.orders.filter((o) => o.destinationId === c.id && o.status === "active").sort((a, b) => a.seq - b.seq)[0];
+  const withOrder = chs.find((c) => activeOf(c));
+  // Spec §6: buyurtmani foydalanuvchi o'zi yaratadi (miqdorni o'zi kiritadi).
+  // Shuning uchun faqat MAVJUD faol buyurtmaga kredit qo'shamiz; buyurtma
+  // bo'lmasa kredit yig'ilib turadi va bir tugma bilan buyurtmaga aylanadi.
+  if (!withOrder) return null;
+  const ch = withOrder;
   const cost = qty * unit;
   u.credits.available -= cost;
   u.credits.reserved += cost;
-  let o = db.orders.find((x) => x.destinationId === ch.id && x.status === "active");
+  let o = activeOf(ch);
   if (o) {
     o.requestedQuantity += qty;
     o.pendingQuantity += qty;
@@ -1304,7 +1319,10 @@ async function showChannels(u, chat) {
     { text: "🛒", callback_data: `ord:${c.id}` }
   ]);
   rows.push([{ text: T(u, "ch_add"), callback_data: "chadd" }, { text: T(u, "ch_code_in"), callback_data: "ctlin" }]);
-  return send(chat, T(u, "ch_title", { n: chs.length, list, balance: balanceLine(u) }), inline(rows));
+  // Kredit yig‘ilib, hali buyurtma berilmagan bo‘lsa — eslatamiz (spec §6).
+  const hasActive = db.orders.some((o) => o.userId === u.id && o.status === "active");
+  const hint = chs.length && !hasActive && u.credits.available >= 10 ? T(u, "ch_order_hint", { a: u.credits.available }) : "";
+  return send(chat, T(u, "ch_title", { n: chs.length, list, balance: balanceLine(u) }) + hint, inline(rows));
 }
 // Kanal statistikasi sahifasi (spec §6): obunachi holatlari, buyurtma tarixi,
 // shikoyatlar va nazoratchilar bir joyda.
@@ -1329,6 +1347,7 @@ async function showChannelDetail(u, ch, chat) {
     balance: balanceLine(u)
   });
   const rows = [[{ text: T(u, "ch_buy"), callback_data: `ord:${ch.id}` }]];
+  if (u.credits.available >= 10) rows[0].push({ text: T(u, "ch_buy_all"), callback_data: `ordall:${ch.id}` });
   if (ch.ownerId === u.id) {
     rows.push([{ text: T(u, "ch_code_in"), callback_data: `ctl:${ch.id}` }, { text: T(u, "ch_unlink"), callback_data: `chdel:${ch.id}` }]);
   }
@@ -1853,6 +1872,16 @@ async function handleCallback(cq) {
         balance: balanceLine(u),
         max: Math.floor(u.credits.available / Math.max(1, unit))
       }));
+    }
+    // Bir tugma bilan: barcha mavjud kreditga buyurtma (spec §6 ni tezlashtirish).
+    case "ordall": {
+      const d = destOf(arg);
+      if (!d) return;
+      const isTg = arg.startsWith("ch-");
+      if (isTg && !channelsOf(u).some((c) => c.id === arg)) return;
+      const qty = Math.floor(u.credits.available / Math.max(1, perSub()));
+      if (qty < 10) return send(chat, T(u, "ord_all_low", { max: qty }), menuFor(u));
+      return prepareOrder(u, arg, Math.min(1e4, qty), chat);
     }
     case "ordok": {
       const sc = u.state;
