@@ -69,8 +69,18 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
     <button data-tab="tasks">Vazifalar</button>
     <button data-tab="complaints">Shikoyatlar</button>
     <button data-tab="sponsors">Homiy kanallar</button>
+    <button data-tab="instagram">Instagram profillari</button>
+    <button data-tab="referrals">Referallar</button>
+    <button data-tab="moderation">Moderatsiya markazi</button>
+    <button data-tab="appeals">Apellyatsiyalar</button>
+    <button data-tab="analytics">Statistika va analitika</button>
+    <button data-tab="health">Tizim sog'lig'i</button>
+    <button data-tab="audit">Audit jurnali</button>
+    <button data-tab="admins">Adminlar va rollar</button>
     <button data-tab="settings">Sozlamalar</button>
     <a href="/news">Yangiliklar boti &rarr;</a>
+    <a href="/logout" id="logout-link">Chiqish</a>
+    <div class="muted" id="whoami" style="margin-top:10px;font-size:12px;padding:0 14px"></div>
   </nav>
 </aside>
 <main>
@@ -182,6 +192,68 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 4px}
       <div style="margin-top:10px"><button class="btn ghost" id="b-send">Yuborish</button></div>
     </div>
   </section>
+
+  <section class="tab" id="tab-instagram">
+    <h2>Instagram profillari</h2>
+    <div class="sub" id="ig-sub"></div>
+    <div class="box"><div id="ig-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-referrals">
+    <h2>Referallar</h2>
+    <div class="sub" id="ref-sub"></div>
+    <div class="box"><div id="ref-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-moderation">
+    <h2>Moderatsiya markazi</h2>
+    <div class="sub">Ogohlantirish, buyurtmalarni muzlatish, kanalni cheklash va bloklash. Har bir amal audit jurnaliga yoziladi.</div>
+    <div class="cards" id="mod-cards"></div>
+    <div class="box"><div id="mod-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-appeals">
+    <h2>Apellyatsiyalar</h2>
+    <div class="sub">Bloklangan foydalanuvchilar /appeal orqali murojaat yuboradi.</div>
+    <div class="box"><div id="ap-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-analytics">
+    <h2>Statistika va analitika</h2>
+    <div class="sub">Oxirgi 7 kun va umumiy ko'rsatkichlar.</div>
+    <div class="cards" id="an-cards"></div>
+    <div class="box"><h3>Kunlar bo'yicha</h3><div id="an-days"></div></div>
+  </section>
+
+  <section class="tab" id="tab-health">
+    <h2>Tizim sog'lig'i</h2>
+    <div class="sub" id="he-sub"></div>
+    <div class="cards" id="he-cards"></div>
+    <div class="box"><h3>Botlar</h3><div id="he-bots"></div></div>
+    <div class="box"><h3>Yangiliklar boti</h3><div id="he-news"></div></div>
+    <div class="box"><h3>Zaxira nusxa (eksport)</h3><div class="muted" style="margin-bottom:10px">Baza holatini JSON fayl sifatida yuklab olish. Har kuni bir marta zaxira nusxa olish tavsiya etiladi.</div><button class="btn" id="he-export">Eksport qilish</button></div>
+  </section>
+
+  <section class="tab" id="tab-audit">
+    <h2>Audit jurnali</h2>
+    <div class="sub" id="au-sub"></div>
+    <div class="box"><div class="row" style="margin-bottom:14px"><input id="au-q" placeholder="Qidirish: kim, amal, obyekt"><button class="btn ghost" id="au-search">Qidirish</button></div><div id="au-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-admins">
+    <h2>Adminlar va rollar</h2>
+    <div class="sub">owner, superadmin, moderator, support, analyst. Har bir rol faqat ruxsat berilgan bo'limlarni ko'radi.</div>
+    <div class="box"><h3>Adminlar</h3><div id="ad-list"></div></div>
+    <div class="box">
+      <h3>Yangi admin</h3>
+      <div class="row">
+        <input id="ad-username" placeholder="username">
+        <input id="ad-password" type="password" placeholder="parol (8+)">
+        <select id="ad-role"><option value="superadmin">superadmin</option><option value="moderator" selected>moderator</option><option value="support">support</option><option value="analyst">analyst</option></select>
+        <button class="btn" id="ad-add">Qo'shish</button>
+      </div>
+    </div>
+  </section>
 </main>
 <div class="toast" id="toast"></div>
 <script>
@@ -198,6 +270,7 @@ function toast(msg, isErr) {
 async function api(path, body) {
   const opt = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
+  if (r.status === 401) { location.href = '/login'; throw new Error('Kirish kerak'); }
   const d = await r.json().catch(() => ({ ok: false, error: 'server javobi oqilmadi' }));
   if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
@@ -223,6 +296,8 @@ document.querySelectorAll('#nav button').forEach(b => {
 function load(tab) {
   ({ overview: loadOverview, bots: loadBots, users: loadUsers, channels: loadChannels,
      orders: loadOrders, tasks: loadTasks, complaints: loadComplaints, sponsors: loadSponsors,
+     instagram: loadInstagram, referrals: loadReferrals, moderation: loadModeration, appeals: loadAppeals,
+     analytics: loadAnalytics, health: loadHealth, audit: loadAudit, admins: loadAdmins,
      settings: loadSettings }[tab] || (() => {}))().catch(e => toast(e.message, true));
 }
 
@@ -454,10 +529,168 @@ $('#b-send').onclick = async () => {
   $('#b-send').disabled = false;
 };
 
+/* ---------- instagram ---------- */
+async function loadInstagram() {
+  const d = await api('/api/admin/instagram');
+  $('#ig-sub').innerHTML = 'Modul: ' + (d.enabled ? '<span class="pill ok">yoqilgan</span>' : '<span class="pill err">o‘chirilgan</span>') + ' · profillar: ' + d.items.length;
+  $('#ig-list').innerHTML = table(['Profil', 'Egasi', 'O‘zi tasdiqlagan', 'Kutilmoqda', ''], d.items.map(p =>
+    '<tr><td class="mono">@' + esc(p.username) + '</td><td>' + esc(p.user) + '</td><td>' + money(p.selfReported) + '</td><td>' + money(p.pending) + '</td>' +
+    '<td><button class="btn danger sm" data-ig-del="' + esc(p.id) + '">O‘chirish</button></td></tr>').join(''));
+  document.querySelectorAll('[data-ig-del]').forEach(el => el.onclick = async () => {
+    if (!confirm('Profil o‘chirilsinmi?')) return;
+    try { await api('/api/admin/instagram', { action: 'delete', id: el.dataset.igDel }); toast('O‘chirildi'); loadInstagram(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ---------- referallar ---------- */
+async function loadReferrals() {
+  const d = await api('/api/admin/referrals');
+  $('#ref-sub').textContent = 'Jami: ' + d.total + ' · tasdiqlangan: ' + d.verified + ' · bonus berilgan: ' + d.paid + ' · kutilmoqda: ' + d.pending;
+  $('#ref-list').innerHTML = table(['Taklif qilgan', 'Taklif qilingan', 'Vazifa', 'Bonus', 'Kanal'], d.items.map(r =>
+    '<tr><td>' + esc(r.referrer) + '</td><td>' + esc(r.referred) + '</td>' +
+    '<td>' + (r.verified ? '<span class="pill ok">ha</span>' : '<span class="pill">yo‘q</span>') + '</td>' +
+    '<td>' + (r.bonusIssued ? money(r.bonusAmount) + ' (' + r.units + ' ta)' : '<span class="muted">kutilmoqda</span>') + '</td>' +
+    '<td class="mono muted">' + esc(r.channel || '—') + '</td></tr>').join(''));
+}
+
+/* ---------- moderatsiya ---------- */
+async function loadModeration() {
+  const d = await api('/api/admin/moderation');
+  $('#mod-cards').innerHTML = [['Yangi shikoyatlar', d.complaintsNew], ['Apellyatsiyalar', d.appealsOpen], ['Bloklangan', d.blocked]]
+    .map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + money(v) + '</div></div>').join('');
+  $('#mod-list').innerHTML = table(['Foydalanuvchi', 'Holat', 'Oxirgi amal', 'Amallar'], d.items.map(u =>
+    '<tr><td><b>' + esc(u.name) + '</b>' + (u.username ? ' <span class="muted">@' + esc(u.username) + '</span>' : '') + '<div class="mono muted">' + esc(u.telegramId) + '</div></td>' +
+    '<td>' + (u.status === 'blocked' ? '<span class="pill err">bloklangan</span>' : '<span class="pill ok">faol</span>') + '</td>' +
+    '<td class="muted">' + esc(u.last ? u.last.action + ' · ' + u.last.at : '—') + '</td>' +
+    '<td><button class="btn ghost sm" data-mod="warn" data-uid="' + esc(u.telegramId) + '">Ogohlantirish</button> ' +
+    '<button class="btn ghost sm" data-mod="unblock" data-uid="' + esc(u.telegramId) + '">Ochish</button> ' +
+    '<button class="btn danger sm" data-mod="block" data-uid="' + esc(u.telegramId) + '">Blok</button></td></tr>').join(''));
+  document.querySelectorAll('[data-mod]').forEach(el => el.onclick = async () => {
+    const action = el.dataset.mod;
+    const note = action === 'warn' ? (prompt('Sabab (ixtiyoriy):') || '') : '';
+    if (action === 'block' && !confirm('Foydalanuvchi bloklansinmi?')) return;
+    try { await api('/api/admin/moderation', { action, telegramId: el.dataset.uid, note }); toast('Bajarildi'); loadModeration(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ---------- apellyatsiyalar ---------- */
+async function loadAppeals() {
+  const d = await api('/api/admin/appeals');
+  $('#ap-list').innerHTML = d.items.length ? d.items.map(a =>
+    '<div class="box" style="background:#0e1118;margin:0 0 12px"><div><b>' + esc(a.name) + '</b> <span class="mono muted">' + esc(a.userId) + '</span> ' +
+    (a.status === 'NEW' ? '<span class="pill warn">yangi</span>' : a.status === 'ACCEPTED' ? '<span class="pill ok">qabul</span>' : '<span class="pill err">rad</span>') + '</div>' +
+    '<div class="muted" style="margin:4px 0">' + esc(a.at) + '</div><div style="white-space:pre-wrap;margin-bottom:8px">' + esc(a.text) + '</div>' +
+    (a.status === 'NEW' ? '<button class="btn sm" data-ap-ok="' + esc(a.id) + '">Qabul qilish</button> <button class="btn danger sm" data-ap-no="' + esc(a.id) + '">Rad etish</button>' : '') +
+    '</div>').join('') : '<div class="empty">Apellyatsiya yo‘q</div>';
+  document.querySelectorAll('[data-ap-ok]').forEach(el => el.onclick = async () => {
+    try { await api('/api/admin/appeals', { id: el.dataset.apOk, status: 'ACCEPTED' }); toast('Qabul qilindi'); loadAppeals(); }
+    catch (e) { toast(e.message, true); }
+  });
+  document.querySelectorAll('[data-ap-no]').forEach(el => el.onclick = async () => {
+    try { await api('/api/admin/appeals', { id: el.dataset.apNo, status: 'REJECTED' }); toast('Rad etildi'); loadAppeals(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ---------- analitika ---------- */
+async function loadAnalytics() {
+  const d = await api('/api/admin/analytics');
+  const t = d.totals;
+  $('#an-cards').innerHTML = [['Foydalanuvchilar', t.users], ['Kanallar', t.channels], ['Faol buyurtmalar', t.activeOrders],
+    ['Bajarilgan vazifalar', t.tasksVerified], ['Balansdagi kredit', t.creditsAvailable], ['Band kredit', t.creditsReserved],
+    ['Sarflangan', t.creditsSpent], ['Referallar', t.referrals], ['Ochiq shikoyat', t.complaintsOpen]]
+    .map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + money(v) + '</div></div>').join('');
+  $('#an-days').innerHTML = table(['Sana', 'Yangi user', 'Buyurtma', 'Tasdiqlangan', 'Shikoyat'],
+    d.days.map(x => '<tr><td>' + esc(x.date) + '</td><td>' + money(x.users) + '</td><td>' + money(x.orders) + '</td><td>' + money(x.verified) + '</td><td>' + money(x.complaints) + '</td></tr>'));
+}
+
+/* ---------- sog'liq ---------- */
+async function loadHealth() {
+  const d = await api('/api/admin/health');
+  $('#he-sub').innerHTML = 'Ish vaqti: <b>' + esc(d.uptime) + '</b> · saqlash: ' + esc(d.storage) + ' · Node ' + esc(d.node);
+  $('#he-cards').innerHTML = [['RSS (MB)', d.memoryMb.rss], ['Heap (MB)', d.memoryMb.heap], ['Ochiq vazifalar', d.queue.tasksOpen],
+    ['Faol buyurtma', d.queue.ordersActive], ['Yangi shikoyat', d.queue.complaintsNew], ['Audit yozuvlari', d.auditEntries]]
+    .map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + money(v) + '</div></div>').join('');
+  $('#he-bots').innerHTML = table(['Bot', 'Rol', 'Holat', 'Xato'], d.bots.map(b =>
+    '<tr><td class="mono">' + esc(b.id) + '</td><td>' + esc(b.role) + '</td><td>' +
+    (b.online ? '<span class="pill ok">onlayn</span>' : '<span class="pill err">oflayn</span>') + '</td><td class="muted">' + esc(b.lastError || '—') + '</td></tr>'));
+  $('#he-news').innerHTML = '<div class="muted">Yoqilgan: ' + (d.news.enabled ? 'ha' : 'yo‘q') + ' · oxirgi post: ' + esc(d.news.lastPostAt || '—') + ' · holat: ' + esc(d.news.lastStatus || '—') +
+    (d.news.lastError ? ' · xato: ' + esc(d.news.lastError) : '') + '</div><div class="muted" style="margin-top:6px">Oxirgi eksport: ' + esc(d.lastExportAt || 'hech qachon') + '</div>';
+  $('#he-export').onclick = async () => {
+    try {
+      const r = await api('/api/admin/export');
+      const blob = new Blob([JSON.stringify(r.state, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'growth-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      toast('Eksport tayyor');
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------- audit ---------- */
+async function loadAudit() {
+  const q = ($('#au-q').value || '').trim();
+  const d = await api('/api/admin/audit', { q });
+  $('#au-sub').textContent = 'Jami yozuv: ' + d.total + ' · oxirgi ' + d.items.length + ' ta';
+  $('#au-list').innerHTML = table(['Vaqt', 'Kim', 'Rol', 'Amal', 'Obyekt'], d.items.map(a =>
+    '<tr><td class="muted">' + esc(a.at) + '</td><td>' + esc(a.actor) + '</td><td>' + esc(a.role) + '</td><td class="mono">' + esc(a.action) + '</td><td class="muted">' + esc(a.target || a.meta || '—') + '</td></tr>'));
+}
+$('#au-search').onclick = () => loadAudit().catch(e => toast(e.message, true));
+
+/* ---------- adminlar ---------- */
+async function loadAdmins() {
+  const d = await api('/api/admin/admins');
+  $('#ad-list').innerHTML = table(['Username', 'Rol', 'Yaratilgan', 'Oxirgi kirish', ''], d.items.map(a =>
+    '<tr><td><b>' + esc(a.username) + '</b></td><td><span class="pill">' + esc(a.role) + '</span></td><td class="muted">' + esc(a.createdAt) + '</td>' +
+    '<td class="muted">' + esc(a.lastLoginAt || '—') + '</td>' +
+    '<td><button class="btn ghost sm" data-ad-pass="' + esc(a.id) + '">Parol</button> <button class="btn danger sm" data-ad-del="' + esc(a.id) + '">O‘chirish</button></td></tr>'));
+  document.querySelectorAll('[data-ad-del]').forEach(el => el.onclick = async () => {
+    if (!confirm('Admin o‘chirilsinmi?')) return;
+    try { await api('/api/admin/admins', { action: 'delete', id: el.dataset.adDel }); toast('O‘chirildi'); loadAdmins(); }
+    catch (e) { toast(e.message, true); }
+  });
+  document.querySelectorAll('[data-ad-pass]').forEach(el => el.onclick = async () => {
+    const pw = prompt('Yangi parol (8+ belgi):');
+    if (!pw) return;
+    try { await api('/api/admin/admins', { action: 'pass', id: el.dataset.adPass, password: pw }); toast('Parol yangilandi'); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+$('#ad-add').onclick = async () => {
+  const username = $('#ad-username').value.trim();
+  const password = $('#ad-password').value;
+  const role = $('#ad-role').value;
+  if (!username || !password) return toast('Username va parol kiriting', true);
+  $('#ad-add').disabled = true;
+  try {
+    await api('/api/admin/admins', { action: 'add', username, password, role });
+    $('#ad-username').value = ''; $('#ad-password').value = '';
+    toast('Admin qo‘shildi'); loadAdmins();
+  } catch (e) { toast(e.message, true); }
+  $('#ad-add').disabled = false;
+};
+
 /* ---------- start ---------- */
-const initial = (location.hash || '#overview').slice(1);
-const startBtn = document.querySelector('#nav button[data-tab="' + initial + '"]');
-if (startBtn) startBtn.click(); else loadOverview().catch(e => toast(e.message, true));
+const TAB_PERM = { instagram: 'instagram', referrals: 'referrals', moderation: 'moderation', appeals: 'moderation', analytics: 'analytics', health: 'health', audit: 'audit', admins: 'admins' };
+(async () => {
+  try {
+    const me = await api('/api/admin/me');
+    $('#whoami').textContent = me.username + ' · ' + me.role;
+    document.querySelectorAll('#nav button').forEach(b => {
+      const p = TAB_PERM[b.dataset.tab];
+      if (!p) return;
+      const allowed = me.perms.includes('*') || me.perms.includes(p);
+      if (!allowed || (b.dataset.tab === 'admins' && me.role !== 'owner')) b.style.display = 'none';
+    });
+  } catch (e) {}
+  const initial = (location.hash || '#overview').slice(1);
+  const startBtn = document.querySelector('#nav button[data-tab="' + initial + '"]');
+  if (startBtn && startBtn.style.display !== 'none') startBtn.click(); else loadOverview().catch(e => toast(e.message, true));
+})();
 setInterval(() => { if (document.querySelector('#tab-overview').classList.contains('on')) loadOverview().catch(() => {}); }, 30000);
 </script>
 </body>

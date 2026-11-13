@@ -179,7 +179,11 @@ var db = {
   sponsors: [],
   ctlRequests: [],
   verifyLog: [],
+  adminUsers: [],
+  auditLog: [],
+  appeals: [],
   settings: defaultSettings(),
+  lastExportAt: 0,
   lastHour: 0
 };
 function applyLoadedState(loaded) {
@@ -1232,7 +1236,15 @@ async function handleMessage(msg) {
   const chat = msg.chat.id;
   const text = (msg.text || "").trim();
   const { user: u, isNew } = getUser(msg.from, chat);
-  if (u.status === "blocked") return send(chat, "\u26D4 Hisobingiz bloklangan.");
+  if (u.status === "blocked") {
+    if (/^\/appeal/i.test(text)) {
+      if (db.appeals.some((a) => a.userId === u.id && a.status === "NEW")) return send(chat, "📨 Apellyatsiyangiz allaqachon ko‘rib chiqilmoqda.");
+      db.appeals.push({ id: nid("ap"), userId: u.id, userName: u.displayName, text: text.replace(/^\/appeal\s*/i, "").slice(0, 500) || "—", status: "NEW", createdAt: nowStr() });
+      save();
+      return send(chat, "📨 Apellyatsiya qabul qilindi. Admin ko‘rib chiqadi va javob yuboradi.");
+    }
+    return send(chat, "⛔ Hisobingiz bloklangan.\n\nApellyatsiya yuborish: /appeal <sabab/matn>");
+  }
   if (S().isBotPaused && !isAdmin(u.telegramId)) return send(chat, "\u23F8 Bot vaqtincha to\u2018xtatilgan. Keyinroq urinib ko\u2018ring.");
   if (text.startsWith("/start")) {
     const payload = text.split(/\s+/)[1] || "";
@@ -1652,12 +1664,110 @@ try {
 } catch (e) {
   console.error("panel.html o'qilmadi:", e.message);
 }
+// --- Admin autentifikatsiya, rollar va audit (spec §17) ---
+var ROLE_PERMS = {
+  owner: ["*"],
+  superadmin: ["read", "users", "channels", "orders", "tasks", "bots", "settings", "complaints", "sponsors", "instagram", "referrals", "moderation", "news", "analytics", "health", "audit", "export"],
+  moderator: ["read", "users", "channels", "orders", "tasks", "complaints", "sponsors", "moderation", "analytics"],
+  support: ["read", "users", "orders", "complaints", "analytics"],
+  analyst: ["read", "analytics", "health"]
+};
+function can(role, perm) {
+  const list = ROLE_PERMS[role] || [];
+  return list.includes("*") || list.includes(perm);
+}
+var SESSIONS = new Map();
+var SESSION_TTL = 12 * 36e5;
+function hashPass(pw, salt) {
+  const s = salt || crypto.randomBytes(8).toString("hex");
+  return s + ":" + crypto.scryptSync(String(pw), s, 32).toString("hex");
+}
+function checkPass(pw, stored) {
+  if (!stored || !stored.includes(":")) return false;
+  const [salt] = stored.split(":");
+  const calc = hashPass(pw, salt);
+  const a = Buffer.from(calc), b = Buffer.from(stored);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function cookieOf(req, name) {
+  const raw = req.headers.cookie || "";
+  for (const part of raw.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(v.join("="));
+  }
+  return "";
+}
+function sessionOf(req) {
+  const tok = cookieOf(req, "sid");
+  if (!tok) return null;
+  const s2 = SESSIONS.get(tok);
+  if (!s2) return null;
+  if (s2.exp < Date.now()) {
+    SESSIONS.delete(tok);
+    return null;
+  }
+  return s2;
+}
 function authed(req) {
+  req.auth = sessionOf(req);
+  if (req.auth) return true;
   const h = req.headers.authorization || "";
   if (!ADMIN_PASSWORD || !h.startsWith("Basic ")) return false;
   const pass = Buffer.from(h.slice(6), "base64").toString().split(":").slice(1).join(":");
   const a = Buffer.from(pass), b = Buffer.from(ADMIN_PASSWORD);
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+    req.auth = { username: "admin", role: "owner", exp: Date.now() + SESSION_TTL };
+    return true;
+  }
+  return false;
+}
+function readRawBody(req, limit = 2e4) {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (c) => {
+      data += c;
+      if (data.length > limit) req.destroy();
+    });
+    req.on("end", () => resolve(data));
+  });
+}
+function checkPassPlain(input, expected) {
+  const a = Buffer.from(String(input)), b = Buffer.from(String(expected));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function audit(req, action, target, meta) {
+  try {
+  const who = (req && req.auth) || {};
+  const h = (req && req.headers) || {};
+  db.auditLog.push({
+    id: nid("log"),
+    at: nowStr(),
+    actor: who.username || "admin",
+    role: who.role || "owner",
+    action: String(action || ""),
+    target: String(target || ""),
+    meta: meta ? String(meta).slice(0, 300) : "",
+    ip: String(h["x-forwarded-for"] || "").split(",")[0].trim()
+  });
+  if (db.auditLog.length > 5000) db.auditLog.splice(0, 1000);
+  save();
+  } catch (e) {
+    console.error("audit xatosi:", e.message);
+  }
+}
+function loginPage(err) {
+  return `<!doctype html><html lang="uz"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirish</title>
+<style>body{background:#0b0f14;color:#dbe4ef;font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0}
+form{background:#121826;padding:28px;border-radius:14px;width:320px;border:1px solid #1f2937}
+h1{font-size:18px;margin:0 0 18px}label{font-size:12px;color:#8b9bb4;display:block;margin:12px 0 6px}
+input{width:100%;padding:10px;border-radius:8px;border:1px solid #263244;background:#0b0f14;color:#dbe4ef}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:9px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
+.e{color:#f87171;font-size:13px;margin-top:12px;min-height:18px}</style></head><body>
+<form method="POST" action="/login"><h1>Obuna 2X — admin panel</h1>
+<label>Foydalanuvchi nomi</label><input name="username" autocomplete="username" required>
+<label>Parol</label><input name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Kirish</button><div class="e">${err || ""}</div></form></body></html>`;
 }
 // --- Admin panel API yordamchilari ---
 var startedAt = Date.now();
@@ -2078,9 +2188,55 @@ var server = http.createServer((req, res) => {
     res.end("ADMIN_PASSWORD o\u2018rnatilmagan");
     return;
   }
+  if (url.pathname === "/login") {
+    if (req.method === "POST") {
+      return readRawBody(req).then((raw) => {
+        let body = {};
+        try {
+          body = JSON.parse(raw || "{}");
+        } catch {
+          const p = new URLSearchParams(raw || "");
+          body = { username: p.get("username") || "", password: p.get("password") || "" };
+        }
+        const uname = String((body && body.username) || "").trim();
+        const pass = String((body && body.password) || "");
+        const ownerOk = pass && ADMIN_PASSWORD && checkPassPlain(pass, ADMIN_PASSWORD);
+        const adm = db.adminUsers.find((a) => a.username.toLowerCase() === uname.toLowerCase());
+        if (ownerOk || (adm && checkPass(pass, adm.passHash))) {
+          const role = ownerOk ? "owner" : adm.role;
+          const tok = crypto.randomBytes(24).toString("hex");
+          SESSIONS.set(tok, { username: ownerOk ? "owner" : adm.username, role, exp: Date.now() + SESSION_TTL });
+          if (adm) {
+            adm.lastLoginAt = nowStr();
+            save();
+          }
+          audit({ auth: { username: ownerOk ? "owner" : adm.username, role } }, "login", ownerOk ? "owner" : adm.username);
+          res.writeHead(302, {
+            "set-cookie": "sid=" + tok + "; HttpOnly; Path=/; SameSite=Lax; Max-Age=" + Math.floor(SESSION_TTL / 1e3),
+            location: "/"
+          });
+          res.end();
+          return;
+        }
+        res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
+        res.end(loginPage("Foydalanuvchi nomi yoki parol xato"));
+      });
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(loginPage(""));
+    return;
+  }
+  if (url.pathname === "/logout") {
+    const tok = cookieOf(req, "sid");
+    if (tok) SESSIONS.delete(tok);
+    res.writeHead(302, { "set-cookie": "sid=; Path=/; Max-Age=0", location: "/login" });
+    res.end();
+    return;
+  }
   if (!authed(req)) {
-    res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Growth Exchange"' });
-    res.end("Parol kerak");
+    if (url.pathname.startsWith("/api/")) return jsonOut(res, 401, { ok: false, error: "Kirish kerak" });
+    res.writeHead(302, { location: "/login" });
+    res.end();
     return;
   }
   if (url.pathname === "/news") {
@@ -2169,6 +2325,18 @@ var server = http.createServer((req, res) => {
       jsonOut(res, 403, { ok: false, error: "Origin rad etildi" });
       return;
     }
+    const PERM_OF_ROUTE = {
+      overview: "read", me: "read", users: "users", user: "users", channels: "channels",
+      channel: "channels", orders: "orders", order: "orders", tasks: "tasks", bots: "bots",
+      settings: "settings", complaints: "complaints", sponsors: "sponsors", instagram: "instagram",
+      referrals: "referrals", moderation: "moderation", appeals: "moderation", analytics: "analytics",
+      health: "health", audit: "audit", admins: "admins", export: "export", broadcast: "settings"
+    };
+    const needPerm = PERM_OF_ROUTE[route] || "read";
+    const role = (req.auth && req.auth.role) || "owner";
+    if (route === "admins" && role !== "owner") return jsonOut(res, 403, { ok: false, error: "Faqat owner" });
+    if (!can(role, needPerm)) return jsonOut(res, 403, { ok: false, error: "Ruxsat yo'q: " + needPerm });
+    if (isPost) audit(req, route, "", "");
     const run = async () => {
       const b = isPost ? await readJsonBody(req) : {};
       switch (route) {
@@ -2195,6 +2363,265 @@ var server = http.createServer((req, res) => {
               registeredAt: u.registeredAt
             }))
           };
+        }
+        case "me": {
+          return {
+            username: (req.auth && req.auth.username) || "admin",
+            role: (req.auth && req.auth.role) || "owner",
+            perms: ROLE_PERMS[(req.auth && req.auth.role) || "owner"] || ["*"]
+          };
+        }
+        case "instagram": {
+          if (!isPost) {
+            return {
+              enabled: S().isInstagramEnabled,
+              items: db.igProfiles.map((p) => ({
+                id: p.id,
+                username: p.username,
+                user: userById(p.userId)?.displayName || p.userId,
+                selfReported: p.selfReportedFollowers || 0,
+                pending: p.pendingFollowers || 0,
+                status: p.status
+              }))
+            };
+          }
+          if (b.action === "delete") {
+            const p = db.igProfiles.find((x) => x.id === String(b.id || ""));
+            if (!p) throw new Error("Profil topilmadi");
+            db.igProfiles = db.igProfiles.filter((x) => x.id !== p.id);
+            for (const t of db.tasks) if (t.destinationId === p.id && OPEN.has(t.status)) t.status = "CANCELLED";
+            save();
+            audit(req, "instagram_delete", p.username);
+            return { deleted: p.username };
+          }
+          if (b.action === "toggle") {
+            S().isInstagramEnabled = !S().isInstagramEnabled;
+            save();
+            audit(req, "instagram_toggle", String(S().isInstagramEnabled));
+            return { enabled: S().isInstagramEnabled };
+          }
+          throw new Error("Noma'lum amal");
+        }
+        case "referrals": {
+          const items = db.referrals.slice().reverse().map((r) => ({
+            id: r.id,
+            referrer: r.referrerName || r.referrerId,
+            referred: r.referredUserName || r.referredUserId,
+            hasTask: !!r.hasCompletedTask,
+            verified: !!r.isVerified,
+            bonusIssued: !!r.bonusIssued,
+            bonusAmount: r.bonusAmount || 0,
+            channel: r.allocatedChannelId || "",
+            units: r.allocatedUnits || 0,
+            at: r.registeredAt
+          }));
+          return {
+            total: items.length,
+            verified: items.filter((x) => x.verified).length,
+            paid: items.filter((x) => x.bonusIssued).length,
+            pending: db.referrals.filter((r) => r.bonusAmount > 0 && !r.bonusIssued).length,
+            items: items.slice(0, 200)
+          };
+        }
+        case "moderation": {
+          if (!isPost) {
+            return {
+              complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
+              appealsOpen: db.appeals.filter((a) => a.status === "NEW").length,
+              blocked: Object.values(db.users).filter((u) => u.status === "blocked").length,
+              items: Object.values(db.users)
+                .filter((u) => u.status === "blocked" || (u.moderation && u.moderation.length))
+                .slice(0, 200)
+                .map((u) => ({
+                  telegramId: u.telegramId,
+                  name: u.displayName,
+                  username: u.username || "",
+                  status: u.status,
+                  last: (u.moderation && u.moderation.slice(-1)[0]) || null
+                }))
+            };
+          }
+          const uid = String(b.telegramId || "");
+          const u = db.users[uid];
+          if (!u) throw new Error("Foydalanuvchi topilmadi");
+          const note = String(b.note || "").slice(0, 300);
+          u.moderation = u.moderation || [];
+          if (b.action === "warn") {
+            u.moderation.push({ at: nowStr(), action: "warn", note });
+            notify(u, "⚠️ Ogohlantirish: qoidalarga rioya qiling. Sabab: " + (note || "qoidabuzarlik"));
+            audit(req, "mod_warn", uid, note);
+          } else if (b.action === "block") {
+            u.status = "blocked";
+            u.moderation.push({ at: nowStr(), action: "block", note });
+            audit(req, "mod_block", uid, note);
+          } else if (b.action === "unblock") {
+            u.status = "active";
+            u.moderation.push({ at: nowStr(), action: "unblock", note });
+            notify(u, "✅ Hisobingiz tiklandi.");
+            audit(req, "mod_unblock", uid, note);
+          } else if (b.action === "restrict_channel") {
+            const ch = db.channels.find((c) => c.id === String(b.channelId || ""));
+            if (!ch) throw new Error("Kanal topilmadi");
+            ch.restricted = true;
+            ch.restrictedAt = nowStr();
+            audit(req, "mod_restrict_channel", ch.title, note);
+          } else if (b.action === "pause_orders") {
+            for (const o of db.orders.filter((o2) => o2.userId === u.id && o2.status === "active")) {
+              cancelOrderAdmin(o);
+            }
+            u.moderation.push({ at: nowStr(), action: "pause_orders", note });
+            audit(req, "mod_pause_orders", uid, note);
+          } else throw new Error("Noma'lum amal");
+          save();
+          return { ok: true, status: u.status };
+        }
+        case "appeals": {
+          if (!isPost) {
+            return {
+              items: db.appeals.slice().reverse().slice(0, 100).map((a) => ({
+                id: a.id,
+                userId: a.userId,
+                name: a.userName,
+                text: a.text,
+                status: a.status,
+                at: a.createdAt
+              }))
+            };
+          }
+          const ap = db.appeals.find((x) => x.id === String(b.id || ""));
+          if (!ap) throw new Error("Apellyatsiya topilmadi");
+          if (b.status === "ACCEPTED") {
+            const u = userById(ap.userId);
+            if (u) {
+              u.status = "active";
+              notify(u, "✅ Apellyatsiyangiz qabul qilindi. Hisob tiklandi.");
+            }
+          }
+          ap.status = b.status === "ACCEPTED" ? "ACCEPTED" : "REJECTED";
+          ap.resolvedAt = nowStr();
+          save();
+          audit(req, "appeal_" + ap.status, ap.userName || ap.userId);
+          return { ok: true };
+        }
+        case "analytics": {
+          const days = [];
+          for (let i = 6; i >= 0; i--) {
+            const start = new Date(Date.now() - i * 864e5);
+            const key = start.toISOString().slice(0, 10);
+            days.push({
+              date: key,
+              users: Object.values(db.users).filter((u) => String(u.registeredAt || "").startsWith(key)).length,
+              orders: db.orders.filter((o) => String(o.createdAt || "").startsWith(key)).length,
+              complaints: db.complaints.filter((c) => String(c.createdAt || "").startsWith(key)).length,
+              verified: db.tasks.filter((t) => String(t.verifiedAt || "").startsWith(key)).length
+            });
+          }
+          const sum = (arr, k) => arr.reduce((a, x) => a + x[k], 0);
+          return {
+            days,
+            totals: {
+              users: Object.keys(db.users).length,
+              channels: db.channels.length,
+              igProfiles: db.igProfiles.length,
+              orders: db.orders.length,
+              activeOrders: db.orders.filter((o) => o.status === "active").length,
+              tasksVerified: db.tasks.filter((t) => t.status === "VERIFIED" || t.status === "SELF_CONFIRMED").length,
+              creditsAvailable: Object.values(db.users).reduce((a, u) => a + u.credits.available, 0),
+              creditsReserved: Object.values(db.users).reduce((a, u) => a + u.credits.reserved, 0),
+              creditsSpent: Object.values(db.users).reduce((a, u) => a + u.credits.spent, 0),
+              referrals: db.referrals.length,
+              complaintsOpen: db.complaints.filter((c) => c.status === "NEW").length
+            }
+          };
+        }
+        case "health": {
+          const mem = process.memoryUsage();
+          return {
+            uptime: uptimeStr(),
+            storage: STORAGE,
+            db: DATABASE_URL ? "postgres" : "fayl",
+            memoryMb: { rss: Math.round(mem.rss / 1048576), heap: Math.round(mem.heapUsed / 1048576) },
+            queue: {
+              tasksOpen: db.tasks.filter((t) => OPEN.has(t.status)).length,
+              ordersActive: db.orders.filter((o) => o.status === "active").length,
+              complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
+              appealsNew: db.appeals.filter((a) => a.status === "NEW").length
+            },
+            bots: botsList().map((b) => ({
+              id: b.id,
+              role: b.role,
+              online: botRuns.has(b.id),
+              enabled: !!b.enabled,
+              lastError: b.lastError || ""
+            })),
+            news: { enabled: newsCfg().enabled, lastPostAt: newsCfg().lastPostAt, lastStatus: newsCfg().lastStatus, lastError: newsCfg().lastError },
+            lastExportAt: db.lastExportAt ? new Date(db.lastExportAt).toISOString() : "",
+            auditEntries: db.auditLog.length,
+            sessions: SESSIONS.size,
+            node: process.version
+          };
+        }
+        case "audit": {
+          const q = String(b.q || "").toLowerCase();
+          const items = db.auditLog
+            .slice()
+            .reverse()
+            .filter((x) => !q || (x.actor + " " + x.action + " " + x.target).toLowerCase().includes(q))
+            .slice(0, 300);
+          return { total: db.auditLog.length, items };
+        }
+        case "admins": {
+          if (!isPost) {
+            return {
+              roles: Object.keys(ROLE_PERMS),
+              items: db.adminUsers.map((a) => ({
+                id: a.id,
+                username: a.username,
+                role: a.role,
+                createdAt: a.createdAt,
+                lastLoginAt: a.lastLoginAt || ""
+              }))
+            };
+          }
+          if (b.action === "add") {
+            const un = String(b.username || "").trim();
+            const pw = String(b.password || "");
+            const role2 = String(b.role || "moderator");
+            if (!/^[A-Za-z0-9_.-]{3,32}$/.test(un)) throw new Error("Username 3-32 belgi (harf, raqam, _ . -)");
+            if (pw.length < 8) throw new Error("Parol kamida 8 belgi bo'lishi kerak");
+            if (!ROLE_PERMS[role2]) throw new Error("Rol noto'g'ri");
+            if (db.adminUsers.some((a) => a.username.toLowerCase() === un.toLowerCase())) throw new Error("Bu username band");
+            const a = { id: nid("adm"), username: un, passHash: hashPass(pw), role: role2, createdAt: nowStr() };
+            db.adminUsers.push(a);
+            save();
+            audit(req, "admin_add", un, role2);
+            return { id: a.id, username: a.username, role: a.role };
+          }
+          if (b.action === "delete") {
+            const a = db.adminUsers.find((x) => x.id === String(b.id || ""));
+            if (!a) throw new Error("Admin topilmadi");
+            db.adminUsers = db.adminUsers.filter((x) => x.id !== a.id);
+            save();
+            audit(req, "admin_delete", a.username);
+            return { deleted: a.username };
+          }
+          if (b.action === "pass") {
+            const a = db.adminUsers.find((x) => x.id === String(b.id || ""));
+            if (!a) throw new Error("Admin topilmadi");
+            const pw = String(b.password || "");
+            if (pw.length < 8) throw new Error("Parol kamida 8 belgi bo'lishi kerak");
+            a.passHash = hashPass(pw);
+            save();
+            audit(req, "admin_pass", a.username);
+            return { ok: true };
+          }
+          throw new Error("Noma'lum amal");
+        }
+        case "export": {
+          db.lastExportAt = Date.now();
+          save();
+          audit(req, "export", "state");
+          return { at: nowStr(), state: db };
         }
         case "bots": {
           if (!isPost) return { bots: botsList().map(botView) };
@@ -2425,10 +2852,25 @@ var server = http.createServer((req, res) => {
             if (!Number.isFinite(n) || n < 0) throw new Error(k + " noto'g'ri son");
             s[k] = Math.round(n);
           }
+          const igWas = !!s.isInstagramEnabled;
           for (const k of ["isBotPaused", "areOrdersFrozen", "isInstagramEnabled", "hourlyNotificationsEnabled"]) {
             if (b[k] !== void 0) s[k] = !!b[k];
           }
           save();
+          // Instagram yoqilsa/o‘chirilsa — ta'sirlangan buyurtma egalariga xabar (spec §9)
+          if (igWas !== !!s.isInstagramEnabled) {
+            const owners = new Set(
+              db.orders.filter((o) => o.platform === "instagram" && o.status === "active").map((o) => o.userId)
+            );
+            const msg = s.isInstagramEnabled
+              ? "📸 Instagram moduli qayta yoqildi. Muzlatilgan buyurtmalaringiz avtomatik davom etadi."
+              : "📸 Instagram moduli vaqtincha o‘chirildi. Instagram buyurtmalaringiz muzlatildi — balans va tarix saqlanadi, modul yoqilganda davom etadi.";
+            for (const uid of owners) {
+              const u = userById(uid);
+              if (u && notifOn(u, "technical")) notify(u, msg);
+            }
+            audit(req, "instagram_toggle", String(s.isInstagramEnabled), "affected=" + owners.size);
+          }
           return { saved: true };
         }
         case "broadcast": {
