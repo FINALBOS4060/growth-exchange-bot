@@ -2776,12 +2776,87 @@ async function newsHeadlines() {
       signal: AbortSignal.timeout(20e3)
     });
     const t = await r.text();
+    const items = [...t.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => m[1]).slice(0, 10);
+    const out = items.map((it) => {
+      const title = (it.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1] || "";
+      const link = (it.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || "";
+      return {
+        title: title.replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/<[^>]+>/g, "").trim(),
+        link: link.trim()
+      };
+    }).filter((x) => x.title);
+    if (out.length) return out;
+    // Eski RSS tuzilishi uchun zaxira yo'l
     const titles = [...t.matchAll(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/g)].map((m) => m[1]).slice(1);
-    return titles.map((x) => x.replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim()).filter(Boolean).slice(0, 10);
+    return titles.map((x) => ({ title: x.replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim(), link: "" })).filter((x) => x.title).slice(0, 10);
   } catch (e) {
     console.error("News bot: RSS xatosi ->", e.message);
     return [];
   }
+}
+// Mavzuga mos rasm (Unsplash, barqaror havolalar). Google News havolalari
+// ochiq og:image bermaydi, shuning uchun mavzu bo'yicha tanlanadi.
+var NEWS_IMAGES = {
+  security: "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1280&q=80&fm=jpg",
+  ai: "https://images.unsplash.com/photo-1677442136019-21780ecad995?w=1280&q=80&fm=jpg",
+  mobile: "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=1280&q=80&fm=jpg",
+  chip: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=1280&q=80&fm=jpg",
+  space: "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=1280&q=80&fm=jpg",
+  robot: "https://images.unsplash.com/photo-1485827404703-89b55fcc595e?w=1280&q=80&fm=jpg",
+  code: "https://images.unsplash.com/photo-1461749280684-dccba630e2f6?w=1280&q=80&fm=jpg"
+};
+function newsImageFor(parsed) {
+  const t = [parsed.title, (parsed.tags || []).join(" "), (parsed.paragraphs || []).join(" ")].join(" ").toLowerCase();
+  if (/kiber|xavfsiz|security|hack|virus|shifr/.test(t)) return NEWS_IMAGES.security;
+  if (/robot/.test(t)) return NEWS_IMAGES.robot;
+  if (/\bai\b|sun.?iy intellekt|gpt|openai|gemini|neyron|neural|model/.test(t)) return NEWS_IMAGES.ai;
+  if (/chip|protsessor|nvidia|intel|amd|gpu/.test(t)) return NEWS_IMAGES.chip;
+  if (/kosmos|space|nasa|mars|satellit/.test(t)) return NEWS_IMAGES.space;
+  if (/iphone|android|smartfon|telefon|gadget|qurilma/.test(t)) return NEWS_IMAGES.mobile;
+  if (/kod|dastur|linux|python|javascript|ilova|software/.test(t)) return NEWS_IMAGES.code;
+  return NEWS_IMAGES.ai;
+}
+// Maqola sahifasidan og:image ni olib kelish (post rasm bilan chiqishi uchun).
+async function newsOgImage(link) {
+  if (!link) return "";
+  try {
+    const r = await fetch(link, {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; NewsBot/1.0)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(12e3)
+    });
+    if (!r.ok) return "";
+    const html = (await r.text()).slice(0, 250000);
+    const m = html.match(/<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
+    if (!m) return "";
+    const u = m[1].replace(/&amp;/g, "&");
+    return /^https?:\/\//i.test(u) ? u : "";
+  } catch {
+    return "";
+  }
+}
+// Model javobini sarlavha / abzatslar / hashtaglarga ajratadi.
+function newsParse(raw) {
+  const text = String(raw || "").replace(/\r/g, "").trim();
+  const grab = (re) => { const m = text.match(re); return m ? m[1].trim() : ""; };
+  let title = grab(/^\s*SARLAVHA\s*:\s*(.+)$/im);
+  let body = "";
+  const mBody = text.match(/MATN\s*:\s*([\s\S]*?)(?:\n\s*TEGLAR\s*:|$)/i);
+  if (mBody) body = mBody[1];
+  const tagsRaw = grab(/TEGLAR\s*:\s*(.+)$/im);
+  const srcIdx = Number(grab(/MANBA\s*:\s*(\d+)/i)) || 0;
+  if (!title) {
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    title = (lines[0] || "").replace(/^SARLAVHA\s*:\s*/i, "");
+    if (!body) body = lines.slice(1).join("\n");
+  }
+  body = body.replace(/^(MATN\s*:\s*)/i, "").replace(/\n\s*TEGLAR\s*:[\s\S]*$/i, "");
+  const paragraphs = body.split(/\n\s*\n/).map((p) => p.replace(/\n+/g, " ").trim()).filter(Boolean);
+  let tags = tagsRaw.split(/[\s,]+/).map((t) => t.trim()).filter((t) => t.startsWith("#"));
+  if (!tags.length) tags = [...text.matchAll(/#[\p{L}\p{N}_]{2,30}/gu)].map((m) => m[0]).slice(0, 6);
+  const uniq = [...new Set(tags)].slice(0, 6);
+  return { title, paragraphs, tags: uniq, srcIdx };
 }
 async function newsGemini(cfg, model, prompt) {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`, {
@@ -2809,11 +2884,18 @@ async function newsGenerate(cfg) {
   if (!cfg.apiKey) throw new Error("Gemini API kaliti yo'q - /news sahifasida kiriting");
   const last = cfg.history.slice(0, 12).map((h) => h.title).join("; ");
   const heads = await newsHeadlines();
+  const headList = heads.map((h, i) => `${i + 1}. ${h.title}`).join("\n");
   const prompt = `Sen o'zbek tilidagi texno-blogersan. Bugungi IT/texnologiya yangiligidan bitta post yoz.` +
-    (heads.length ? ` Bugungi sarlavhalar: ${heads.join(" | ")}. Shu sarlavhalardan eng qiziqarlisini tanla va o'zbek tilida tushuntir.` : " Eng so'nggi IT yangiligini top.") +
+    (heads.length ? ` Bugungi sarlavhalar:\n${headList}\nShu ro'yxatdan eng qiziqarlisini tanla (MANBA da uning raqamini yoz).` : " Eng so'nggi IT yangiligini top.") +
     ` Oldingi mavzularni takrorlama: ${last || "yo'q"}.` +
     ` Faqat texnologiya, AI, gadjet yoki dasturiy ta'minotga oid yangilikni tanla — janjal, siyosat, sport va shaxsiy hayot haqida yozma.` +
-    ` Post 700 belgidan oshmasin, emoji ko'p bo'lsin, oxirida "IMAGE_URL: <rasm havolasi>" qatorini qo'sh.`;
+    `\n\nFAQAT quyidagi formatda javob ber, boshqa so'z qo'shma:\n` +
+    `SARLAVHA: <bitta mos emoji> <qisqa sarlavha, 70 belgidan oshmasin, oxirida nuqta yo'q>\n\n` +
+    `MATN:\n<1-abzats: 1-2 gap>\n\n<2-abzats: 1-2 gap>\n\n<3-abzats: 1-2 gap>\n\n` +
+    `TEGLAR: #Tag1 #Tag2 #Tag3 #Tag4\n` +
+    `MANBA: <yuqoridagi ro'yxatdagi raqam>` +
+    `\n\nQoidalar: abzatslar orasida bo'sh qator bo'lsin, har abzats oddiy matn (markdown yo'q), ` +
+    `hashtag 3-5 ta, sarlavhada bitta emoji, matnda 1-2 emoji yetarli.`;
   const errors = [];
   // Avval cooldown tugagan (tirik) modellarni sinab ko'ramiz; bo'lmasa hammasini.
   const live = cfg.models.filter((m) => newsModelReady(m));
@@ -2822,7 +2904,7 @@ async function newsGenerate(cfg) {
     try {
       const text = await newsGemini(cfg, model, prompt);
       cfg.lastModel = model;
-      return text;
+      return { text, heads };
     } catch (e) {
       errors.push(`${model}: ${e.message}`);
       console.error(`News bot: ${model} ishlamadi -> ${e.message}`);
@@ -2841,21 +2923,26 @@ async function newsPublish(trigger, dry) {
   const cfg = newsCfg();
   cfg.lastStatus = "yaratilmoqda";
   try {
-    const raw = await newsGenerate(cfg);
-    let body = raw.trim();
-    let image = "";
-    const m = raw.match(/IMAGE_URL:\s*(\S+)/i);
-    if (m) {
-      image = m[1].trim();
-      body = raw.replace(/IMAGE_URL:.*$/im, "").trim();
-    }
+    const gen = await newsGenerate(cfg);
+    const parsed = newsParse(gen.text);
+    const body = [parsed.title, ...parsed.paragraphs, parsed.tags.join(" ")].filter(Boolean).join("\n\n");
+    if (!parsed.title && !parsed.paragraphs.length) throw new Error("Model bo'sh javob qaytardi");
     if (dry) {
       cfg.lastStatus = "sinov";
       cfg.lastError = "";
       save();
       return { ok: true, dry: true, text: body, model: cfg.lastModel };
     }
-    const html = newsToHtml(body);
+    // Rasm: modeldagi IMAGE_URL yoki manba maqolaning og:image.
+    let image = "";
+    const mu = gen.text.match(/IMAGE_URL:\s*(\S+)/i);
+    if (mu) image = mu[1].trim();
+    const heads = gen.heads || [];
+    const pick = heads[Math.min(heads.length - 1, Math.max(0, (parsed.srcIdx || 1) - 1))] || heads[0];
+    // Google News havolasi og:image bermaydi — to'g'ridan-to'g'ri manba bo'lsa urinamiz.
+    if (!image && pick && pick.link && !/news\.google\.com/i.test(pick.link)) image = await newsOgImage(pick.link);
+    if (!image) image = newsImageFor(parsed);
+    const html = newsCaption(parsed);
     let sent;
     if (image) {
       sent = await newsTg("sendPhoto", { chat_id: cfg.channel, photo: image, caption: html.slice(0, 1024), parse_mode: "HTML" });
@@ -2875,7 +2962,7 @@ async function newsPublish(trigger, dry) {
     cfg.lastPostAt = stamp.full;
     cfg.lastStatus = "yuborildi";
     cfg.lastError = "";
-    cfg.history.unshift({ at: stamp.full, title: body.split("\n")[0].slice(0, 80), trigger: trigger || "jadval" });
+    cfg.history.unshift({ at: stamp.full, title: String(parsed.title || body.split("\n")[0]).slice(0, 80), trigger: trigger || "jadval" });
     cfg.history = cfg.history.slice(0, 50);
     save();
     console.log(`News bot: post yuborildi (${cfg.channel}, ${trigger || "jadval"}, model: ${cfg.lastModel || "-"})`);
@@ -2891,6 +2978,20 @@ async function newsPublish(trigger, dry) {
 // Gemini matnidagi **qalin** belgilarini Telegram HTML'iga aylantiradi.
 // Avval HTML belgilari qochiriladi, keyin qalinlashtirish qo'llanadi — shunda
 // matndagi < & > belgilari parse xatosiga sabab bo'lmaydi.
+// Post matni: sarlavha (qalin) + 3 abzats + hashtaglar. Telegram caption ≤1024.
+function newsCaption(parsed) {
+  const title = parsed.title ? `<b>${esc(parsed.title)}</b>` : "";
+  const tags = (parsed.tags || []).join(" ");
+  let paras = (parsed.paragraphs || []).slice();
+  const build = () => [title, paras.map((p) => esc(p)).join("\n\n"), tags].filter(Boolean).join("\n\n");
+  let out = build();
+  while (out.length > 1000 && paras.length > 1) {
+    paras.pop();
+    out = build();
+  }
+  if (out.length > 1000) out = out.slice(0, 995).trimEnd() + "…";
+  return out;
+}
 function newsToHtml(text) {
   const safe = String(text || "")
     .replace(/&/g, "&amp;")
