@@ -144,6 +144,8 @@ var defaultSettings = () => ({
   isTelegramPaused: false,
   areOrdersFrozen: false,
   hourlyNotificationsEnabled: true,
+  // Balansdagi kredit avtomatik ravishda o'z kanaliga buyurtmaga aylantiriladi.
+  autoOrderCredits: true,
   telegramBotToken: "",
   botUsername: "",
   botDisplayName: "Obuna 2X bot",
@@ -458,6 +460,7 @@ var STR = {
     tasks_reason_own: "mavjud buyurtmalar sizning kanalingizga tegishli — o‘z kanalingiz vazifa bo‘lib chiqmaydi.",
     tasks_supply: "\nℹ️ Hozir tizimda {o} ta faol buyurtma, sizga mos {b} ta kanal bor — hammasi shu ro‘yxatda.",
     tasks_already: "\n\n♻️ Bu kanal(lar) sizda allaqachon bor. Yangi buyurtmalar tushganda shu yerda paydo bo‘ladi.",
+    auto_order_note: "\n\n🛒 <b>Avtomatik buyurtma</b>\n{qty} kreditingiz “{title}” kanaliga obunachi buyurtmasiga aylantirildi.",
     tasks_title: "📋 <b>Vazifalar: {n} ta kanal</b>\n\n1. Havoladan kanalga kiring\n2. Obuna bo‘ling\n3. “✅ Obuna bo‘ldim” tugmasini bosing — bot tekshiradi\n\nHar bir kanal qatorida: 🔗 havola va <b>⚠️ Shikoyat</b>.\n\nHar bir obuna uchun: <b>+{reward} kredit</b>\n\n",
     tasks_btn_done: "✅ Obuna bo‘ldim",
     tasks_btn_refresh: "🔄 Yangilash",
@@ -541,6 +544,7 @@ var STR = {
     tasks_reason_own: "доступные заказы относятся к вашему каналу — на свой канал задание не выдаётся.",
     tasks_supply: "\nℹ️ Сейчас в системе {o} активных заказов, для вас доступно {b} каналов — все они в списке.",
     tasks_already: "\n\n♻️ Этот канал уже есть в вашем списке. Новые задания появятся после новых заказов.",
+    auto_order_note: "\n\n🛒 <b>Автоматический заказ</b>\n{qty} ваших кредитов превращены в заказ подписчиков для “{title}”.",
     tasks_title: "📋 <b>Задания: {n} каналов</b>\n\n1. Откройте канал по ссылке\n2. Подпишитесь\n3. Нажмите “✅ Я подписался” — бот проверит\n\nВ строке каждого канала: 🔗 ссылка и <b>⚠️ Жалоба</b>.\n\nЗа каждую подписку: <b>+{reward} кредитов</b>\n\n",
     tasks_btn_done: "✅ Я подписался",
     tasks_btn_refresh: "🔄 Обновить",
@@ -624,6 +628,7 @@ var STR = {
     tasks_reason_own: "the available orders belong to your own channel — your channel never appears as a task for you.",
     tasks_supply: "\nℹ️ There are {o} active orders in the system and {b} channels available for you — all of them are listed.",
     tasks_already: "\n\n♻️ You already have this channel. New tasks will appear after new orders.",
+    auto_order_note: "\n\n🛒 <b>Automatic order</b>\n{qty} of your credits were turned into a subscriber order for “{title}”.",
     tasks_title: "📋 <b>Tasks: {n} channels</b>\n\n1. Open the channel link\n2. Subscribe\n3. Press “✅ I subscribed” — the bot verifies\n\nEach channel row has 🔗 link and <b>⚠️ Complaint</b>.\n\nPer subscription: <b>+{reward} credits</b>\n\n",
     tasks_btn_done: "✅ I subscribed",
     tasks_btn_refresh: "🔄 Refresh",
@@ -972,6 +977,54 @@ function addTx(u, amount, type, description, extra = {}) {
   });
   if (db.transactions.length > 2e4) db.transactions.splice(0, 5e3);
 }
+// Balansdagi kreditni foydalanuvchining o'z kanaliga avtomatik buyurtmaga
+// aylantiradi (1 kredit = 1 obunachi). Shu tufayli kredit bo'sh turmaydi va
+// navbatda boshqa foydalanuvchilar uchun vazifa paydo bo'ladi.
+function autoOrderFromBalance(u) {
+  if (!u || !S().autoOrderCredits || S().areOrdersFrozen || S().isBotPaused) return null;
+  const chs = db.channels.filter((c) => c.ownerId === u.id);
+  if (!chs.length) return null;
+  const unit = Math.max(1, perSub());
+  const qty = Math.floor((Number(u.credits.available) || 0) / unit);
+  if (qty < 1) return null;
+  const ch = chs.find((c) => db.orders.some((o) => o.destinationId === c.id && o.status === "active")) || chs[0];
+  const cost = qty * unit;
+  u.credits.available -= cost;
+  u.credits.reserved += cost;
+  let o = db.orders.find((x) => x.destinationId === ch.id && x.status === "active");
+  if (o) {
+    o.requestedQuantity += qty;
+    o.pendingQuantity += qty;
+    o.totalCost = (o.totalCost || 0) + cost;
+  } else {
+    o = {
+      id: nid("ord"),
+      seq: ++db.seq,
+      userId: u.id,
+      userName: u.displayName,
+      destinationId: ch.id,
+      destinationTitle: ch.title,
+      platform: "telegram",
+      requestedQuantity: qty,
+      verifiedQuantity: 0,
+      pendingQuantity: qty,
+      cancelledQuantity: 0,
+      unitCost: unit,
+      totalCost: cost,
+      freeUnits: 0,
+      status: "active",
+      source: "auto_balance",
+      createdAt: nowStr()
+    };
+    db.orders.push(o);
+    u.activeOrdersCount = (u.activeOrdersCount || 0) + 1;
+  }
+  ch.totalRequested += qty;
+  ch.pendingSubscriptions += qty;
+  addTx(u, -cost, "order_spend", "Avtomatik buyurtma: " + ch.title + " x" + qty, { orderId: o.id });
+  save();
+  return { channel: ch, qty, cost, order: o };
+}
 var OPEN = /* @__PURE__ */ new Set(["ACTIVE", "PENDING", "RECHECK", "CHECK_ERROR"]);
 var destOf = (id) => db.channels.find((c) => c.id === id) || db.igProfiles.find((p) => p.id === id);
 var orderAssigned = (o) => db.tasks.filter((t) => t.orderId === o.id && t.status !== "CANCELLED").length;
@@ -1192,9 +1245,11 @@ async function verifyBatch(u, platform, chat) {
     real.checkedAt = (/* @__PURE__ */ new Date()).toISOString();
   }
   if (firstTg) tryQualifyReferral(u);
+  const auto = autoOrderFromBalance(u);
   save();
   const notDone = out.deferredTasks.filter((t) => t.status === "PENDING");
   let text = T(u, "verify_ok", { ok: out.verifiedTasks.length, reward: earned, bal: u.credits.available });
+  if (auto && auto.cost > 0) text += T(u, "auto_order_note", { qty: auto.qty, title: esc(auto.channel.title) });
   if (notDone.length) text += `
 
 ⏳ <b>Hali obuna bo‘lmaganlar (${notDone.length} ta):</b>
@@ -1213,6 +1268,8 @@ function balanceLine(u) {
 async function showTasks(u, platform, chat, next) {
   if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
+  // Bo‘sh turgan kreditni avtomatik buyurtmaga aylantiramiz (navbat to‘lishi uchun).
+  autoOrderFromBalance(u);
   const batch = next ? getNextBatch(u, platform) : getBatch(u, platform);
   const supply = taskSupply(u, platform);
   if (!batch.length) {
@@ -1577,7 +1634,9 @@ async function addChannel(u, text, chat) {
   save();
   moderationScan("channel", { userId: u.id, userName: u.displayName, channelId: String(ch.id), title: ch.title, username: ch.username || uname });
   const head = T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) });
-  const tail = linkBonus > 0 ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "";
+  const autoCh = autoOrderFromBalance(u);
+  const tail = (linkBonus > 0 ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "") +
+    (autoCh ? T(u, "auto_order_note", { qty: autoCh.qty, title: esc(autoCh.channel.title) }) : "");
   return send(chat, head + tail, menuFor(u));
 }
 var BOT_ID = 0;
@@ -3670,7 +3729,7 @@ var server = http.createServer((req, res) => {
             s[k] = Math.round(n);
           }
           const igWas = !!s.isInstagramEnabled;
-          for (const k of ["isBotPaused", "areOrdersFrozen", "isInstagramEnabled", "hourlyNotificationsEnabled"]) {
+          for (const k of ["isBotPaused", "areOrdersFrozen", "isInstagramEnabled", "hourlyNotificationsEnabled", "autoOrderCredits"]) {
             if (b[k] !== void 0) s[k] = !!b[k];
           }
           save();
@@ -3854,6 +3913,11 @@ function migrateSettings() {
     save();
     console.log(`Qoida: 1 obunachi = ${s.creditPerSubscriber} kredit, obuna mukofoti ${s.creditRewardTelegram}, referal ${s.creditRewardReferral}`);
   }
+  if (typeof s.autoOrderCredits !== "boolean") {
+    s.autoOrderCredits = true;
+    save();
+    console.log("Sozlama: avtomatik buyurtma yoqildi (balansdagi kredit o‘z kanaliga o‘tadi)");
+  }
   if (s.bonusRuleVersion === 2) return;
   s.creditRewardSignup = 0;
   if (typeof s.creditRewardChannelLink !== "number") s.creditRewardChannelLink = 10;
@@ -3865,6 +3929,12 @@ async function main() {
   await openStore();
   botsInit();
   migrateSettings();
+  // Avvaldan yig‘ilgan kreditlar ham buyurtmaga aylansin (bir marta ishga tushishda).
+  if (S().autoOrderCredits) {
+    let n = 0;
+    for (const u of db.users) if (autoOrderFromBalance(u)) n++;
+    if (n) console.log(`Avtomatik buyurtma: ${n} foydalanuvchining balansi buyurtmaga aylantirildi`);
+  }
   server.on("error", (e) => {
     console.error("HTTP server xatosi:", e.message);
     process.exit(1);

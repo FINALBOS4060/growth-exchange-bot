@@ -213,6 +213,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
         <div>
           <div class="chk"><input type="checkbox" id="s-igmod"><span>Instagram moduli yoqilgan</span></div>
           <div class="chk"><input type="checkbox" id="s-hourly"><span>Soatlik hisobotlar</span></div>
+          <div class="chk"><input type="checkbox" id="s-autoorder"><span>Balansdagi kredit avtomatik buyurtmaga aylansin</span></div>
         </div>
       </div>
       <div style="margin-top:14px"><button class="btn" id="s-save">Saqlash</button></div>
@@ -537,6 +538,7 @@ async function loadSettings() {
   $('#s-frozen').checked = !!s.areOrdersFrozen;
   $('#s-igmod').checked = !!s.isInstagramEnabled;
   $('#s-hourly').checked = !!s.hourlyNotificationsEnabled;
+  $('#s-autoorder').checked = s.autoOrderCredits !== false;
 }
 $('#s-save').onclick = async () => {
   $('#s-save').disabled = true;
@@ -550,7 +552,8 @@ $('#s-save').onclick = async () => {
       isBotPaused: $('#s-paused').checked,
       areOrdersFrozen: $('#s-frozen').checked,
       isInstagramEnabled: $('#s-igmod').checked,
-      hourlyNotificationsEnabled: $('#s-hourly').checked
+      hourlyNotificationsEnabled: $('#s-hourly').checked,
+      autoOrderCredits: $('#s-autoorder').checked
     });
     toast('Sozlamalar saqlandi');
   } catch (e) { toast(e.message, true); }
