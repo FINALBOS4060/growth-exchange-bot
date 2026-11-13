@@ -139,7 +139,20 @@ var defaultSettings = () => ({
   botDisplayName: "Growth Exchange Bot",
   botId: "",
   webhookUrl: "",
-  webhookStatus: "polling"
+  webhookStatus: "polling",
+  // News bot (world-news-bot integratsiyasi) — /news sahifasidan boshqariladi
+  news: {
+    enabled: true,
+    channel: "@WORLD_NEWS_1M",
+    times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
+    model: "gemini-2.0-flash",
+    apiKey: "",
+    sent: [],
+    history: [],
+    lastPostAt: "",
+    lastStatus: "",
+    lastError: ""
+  }
 });
 var db = {
   seq: 0,
@@ -1133,6 +1146,222 @@ function authed(req) {
   const a = Buffer.from(pass), b = Buffer.from(ADMIN_PASSWORD);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+// --- News bot: Gemini bilan yangilik yaratib, kanalga post qiladi ---
+var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "8231778750:AAH4jJaKSZ7a_ATxSHthi_JiRWuIJ2ob33Q").trim();
+var newsBotInfo = { username: "", id: "" };
+function newsDefaults() {
+  return {
+    enabled: true,
+    channel: "@WORLD_NEWS_1M",
+    times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
+    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    apiKey: process.env.GEMINI_API_KEY || "",
+    sent: [],
+    history: [],
+    lastPostAt: "",
+    lastStatus: "",
+    lastError: ""
+  };
+}
+function newsCfg() {
+  if (!S().news || typeof S().news !== "object") S().news = newsDefaults();
+  const n = S().news;
+  const d = newsDefaults();
+  for (const k of Object.keys(d)) if (n[k] === void 0) n[k] = d[k];
+  if (!Array.isArray(n.times)) n.times = d.times;
+  if (!Array.isArray(n.sent)) n.sent = [];
+  if (!Array.isArray(n.history)) n.history = [];
+  if (!n.apiKey && process.env.GEMINI_API_KEY) n.apiKey = process.env.GEMINI_API_KEY;
+  return n;
+}
+async function newsTg(method, params = {}, timeoutMs = 35e3) {
+  if (!NEWS_TOKEN) return { ok: false, description: "NEWS_BOT_TOKEN o'rnatilmagan" };
+  try {
+    const r = await fetch(`${API}/bot${NEWS_TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    return await r.json().catch(() => ({ ok: false, description: "javob o'qilmadi" }));
+  } catch (e) {
+    return { ok: false, description: e.message, network: true };
+  }
+}
+function uzbNow() {
+  const t = new Date(Date.now() + 5 * 3600e3);
+  const p = (x) => String(x).padStart(2, "0");
+  const date = `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}`;
+  const time = `${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+  return { date, time, full: `${date} ${time}` };
+}
+async function newsGenerate(cfg) {
+  if (!cfg.apiKey) throw new Error("Gemini API kaliti yo'q - /news sahifasida kiriting");
+  const last = cfg.history.slice(0, 12).map((h) => h.title).join("; ");
+  const prompt = `Sen o'zbek tilidagi texno-blogersan. Eng yangi IT/texnologiya yangiligini top va post yoz.` +
+    ` Oldingi mavzularni takrorlama: ${last || "yo'q"}.` +
+    ` Post 700 belgidan oshmasin, emoji ko'p bo'lsin, oxirida "IMAGE_URL: <rasm havolasi>" qatorini qo'sh.`;
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    signal: AbortSignal.timeout(60e3)
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Gemini ${r.status}: ${String((j.error && j.error.message) || "xato").slice(0, 200)}`);
+  const cand = (j.candidates || [])[0] || {};
+  const text = ((cand.content || {}).parts || []).map((p) => p.text || "").join("");
+  if (!text.trim()) throw new Error("Gemini bo'sh javob qaytardi");
+  return text;
+}
+async function newsPublish(trigger) {
+  const cfg = newsCfg();
+  cfg.lastStatus = "yaratilmoqda";
+  try {
+    const raw = await newsGenerate(cfg);
+    let body = raw.trim();
+    let image = "";
+    const m = raw.match(/IMAGE_URL:\s*(\S+)/i);
+    if (m) {
+      image = m[1].trim();
+      body = raw.replace(/IMAGE_URL:.*$/im, "").trim();
+    }
+    let sent;
+    if (image) {
+      sent = await newsTg("sendPhoto", { chat_id: cfg.channel, photo: image, caption: body.slice(0, 1024) });
+      if (!sent.ok) sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: body.slice(0, 4096) });
+    } else {
+      sent = await newsTg("sendMessage", { chat_id: cfg.channel, text: body.slice(0, 4096) });
+    }
+    if (!sent.ok) throw new Error(sent.description || "Telegram xatosi");
+    const stamp = uzbNow();
+    cfg.lastPostAt = stamp.full;
+    cfg.lastStatus = "yuborildi";
+    cfg.lastError = "";
+    cfg.history.unshift({ at: stamp.full, title: body.split("\n")[0].slice(0, 80), trigger: trigger || "jadval" });
+    cfg.history = cfg.history.slice(0, 50);
+    save();
+    console.log(`News bot: post yuborildi (${cfg.channel}, ${trigger || "jadval"})`);
+    return { ok: true, text: body };
+  } catch (e) {
+    cfg.lastStatus = "xato";
+    cfg.lastError = e.message;
+    save();
+    console.error("News bot xatosi:", e.message);
+    return { ok: false, error: e.message };
+  }
+}
+function startNewsScheduler() {
+  const cfg = newsCfg();
+  if (!NEWS_TOKEN) {
+    console.error("News bot: NEWS_BOT_TOKEN o'rnatilmagan");
+    return;
+  }
+  newsTg("getMe").then((me) => {
+    if (me.ok) {
+      newsBotInfo = { username: me.result.username, id: String(me.result.id) };
+      console.log(`News bot @${me.result.username} ulandi (kanal: ${newsCfg().channel})`);
+    } else {
+      console.error("News bot getMe xatosi:", me.description);
+    }
+  });
+  setInterval(async () => {
+    const c = newsCfg();
+    if (!c.enabled) return;
+    const t = uzbNow();
+    const slot = `${t.date} ${t.time}`;
+    if (!c.times.includes(t.time) || c.sent.includes(slot)) return;
+    c.sent.push(slot);
+    c.sent = c.sent.slice(-200);
+    save();
+    await newsPublish("jadval");
+  }, 30e3);
+  console.log(`News bot jadvali: ${cfg.times.join(", ")} (${cfg.channel})`);
+}
+function readJsonBody(req, limit = 1e5) {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (c) => {
+      data += c;
+      if (data.length > limit) data = data.slice(0, limit);
+    });
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(data || "{}"));
+      } catch {
+        resolve({});
+      }
+    });
+    req.on("error", () => resolve({}));
+  });
+}
+var NEWS_PAGE = `<!doctype html>
+<html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yangiliklar boti</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;font:15px/1.5 system-ui,Segoe UI,Arial;background:#0f1115;color:#e7e9ee}
+.wrap{max-width:780px;margin:0 auto;padding:24px}
+h1{font-size:20px;margin:0 0 4px}
+.muted{color:#8b93a7;font-size:13px}
+.card{background:#171a21;border:1px solid #242936;border-radius:12px;padding:16px;margin:16px 0}
+label{display:block;font-size:13px;color:#a8b0c2;margin:10px 0 4px}
+input,textarea,select{width:100%;box-sizing:border-box;background:#0f1219;border:1px solid #2b3243;color:#e7e9ee;border-radius:8px;padding:9px 10px;font:inherit}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1;min-width:180px}
+button{background:#2f6bff;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:600;cursor:pointer}
+button.ghost{background:#222937}button:disabled{opacity:.55;cursor:default}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;background:#1f2531;color:#a8b0c2}
+.pill.ok{background:#12351f;color:#6ee7a0}.pill.err{background:#3a1414;color:#ff9b9b}
+ul{list-style:none;padding:0;margin:8px 0 0}li{padding:7px 0;border-bottom:1px solid #1f2531;font-size:13px}
+pre{white-space:pre-wrap;background:#0f1219;border:1px solid #2b3243;border-radius:8px;padding:10px;font-size:13px;max-height:240px;overflow:auto}
+</style></head><body><div class="wrap">
+<h1>Yangiliklar boti</h1>
+<div class="muted">Gemini bilan post yaratib, kanalga yuboradi · <a href="/" style="color:#7aa2ff">asosiy panel</a></div>
+<div class="card">
+  <div><span id="state" class="pill">yuklanmoqda…</span> <span id="who" class="muted"></span></div>
+  <label>Holat</label>
+  <select id="enabled"><option value="1">Yoqilgan</option><option value="0">To'xtatilgan</option></select>
+  <div class="row">
+    <div><label>Kanal (@yoki -100…)</label><input id="channel" placeholder="@WORLD_NEWS_1M"></div>
+    <div><label>Model</label><input id="model" placeholder="gemini-2.0-flash"></div>
+  </div>
+  <label>Gemini API kaliti</label><input id="apiKey" type="password" placeholder="o'zgarmasin desangiz bo'sh qoldiring">
+  <label>Jadval (vergul bilan, Asia/Tashkent)</label><input id="times" placeholder="08:00, 12:00, 18:00">
+  <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+    <button id="save">Saqlash</button>
+    <button id="post" class="ghost">Hozir post qil</button>
+  </div>
+</div>
+<div class="card"><div id="last" class="muted">Oxirgi post: —</div><pre id="log" hidden></pre><ul id="hist"></ul></div>
+</div>
+<script>
+const $=(s)=>document.querySelector(s);
+async function load(){
+ const r=await fetch('/api/news');const d=await r.json();
+ $('#enabled').value=d.enabled?'1':'0';$('#channel').value=d.channel||'';$('#model').value=d.model||'';
+ $('#times').value=(d.times||[]).join(', ');
+ $('#apiKey').placeholder=d.hasKey?('kalit bor ('+d.keySource+') - o\'zgartirmasangiz bo\'sh qoldiring'):'kalit yo\'q - kiriting';
+ $('#who').textContent=d.bot.username?('@'+d.bot.username):'bot ulanmagan';
+ const st=$('#state');st.textContent=d.lastStatus||'tayyor';
+ st.className='pill '+(d.lastStatus==='xato'?'err':(d.lastStatus==='yuborildi'?'ok':''));
+ $('#last').textContent='Oxirgi post: '+(d.lastPostAt||'—')+(d.lastError?(' · xato: '+d.lastError):'');
+ $('#hist').innerHTML=(d.history||[]).map(h=>'<li><b>'+h.at+'</b> · '+h.title+' <span class="muted">('+h.trigger+')</span></li>').join('')||'<li class="muted">Tarix bo\'sh</li>';
+}
+$('#save').onclick=async()=>{
+ $('#save').disabled=true;
+ const body={enabled:$('#enabled').value==='1',channel:$('#channel').value.trim(),model:$('#model').value.trim(),times:$('#times').value,apiKey:$('#apiKey').value};
+ const r=await fetch('/api/news',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const d=await r.json();$('#save').disabled=false;
+ if(!d.ok) alert(d.error||'xato'); else { $('#apiKey').value=''; load(); }
+};
+$('#post').onclick=async()=>{
+ $('#post').disabled=true;const st=$('#state');st.textContent='yuborilmoqda…';st.className='pill';
+ const r=await fetch('/api/news/post',{method:'POST'});const d=await r.json();
+ $('#post').disabled=false;load();
+ $('#log').hidden=false;$('#log').textContent=d.ok?('Yuborildi:\n\n'+d.text):('Xato: '+d.error);
+};
+load();
+</script></body></html>`;
 var server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://x");
   if (url.pathname === "/healthz") {
@@ -1148,6 +1377,59 @@ var server = http.createServer((req, res) => {
   if (!authed(req)) {
     res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Growth Exchange"' });
     res.end("Parol kerak");
+    return;
+  }
+  if (url.pathname === "/news") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(NEWS_PAGE);
+    return;
+  }
+  if (url.pathname === "/api/news") {
+    const cfg = newsCfg();
+    if (req.method === "POST") {
+      readJsonBody(req).then((b) => {
+        const times = String(b.times ?? cfg.times.join(","))
+          .split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean)
+          .filter((x) => /^([01]\d|2[0-3]):[0-5]\d$/.test(x));
+        const channel = String(b.channel ?? cfg.channel).trim();
+        if (!(channel.startsWith("@") || /^-?\d{5,}$/.test(channel))) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Kanal @username yoki -100… ID bo'lishi kerak" }));
+          return;
+        }
+        cfg.enabled = b.enabled === void 0 ? cfg.enabled : !!b.enabled;
+        cfg.channel = channel;
+        if (b.model) cfg.model = String(b.model).trim();
+        if (times.length) cfg.times = times;
+        if (b.apiKey) cfg.apiKey = String(b.apiKey).trim();
+        cfg.lastError = "";
+        save();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({
+      enabled: cfg.enabled,
+      channel: cfg.channel,
+      times: cfg.times,
+      model: cfg.model,
+      hasKey: !!cfg.apiKey,
+      keySource: process.env.GEMINI_API_KEY ? "env" : cfg.apiKey ? "panel" : "yo'q",
+      lastPostAt: cfg.lastPostAt,
+      lastStatus: cfg.lastStatus,
+      lastError: cfg.lastError,
+      history: cfg.history.slice(0, 20),
+      bot: newsBotInfo
+    }));
+    return;
+  }
+  if (url.pathname === "/api/news/post" && req.method === "POST") {
+    newsPublish("qo'lda").then((r) => {
+      res.writeHead(r.ok ? 200 : 502, { "content-type": "application/json" });
+      res.end(JSON.stringify(r));
+    });
     return;
   }
   if (url.pathname === "/api/stats") {
@@ -1245,6 +1527,7 @@ async function main() {
   });
   server.listen(PORT, HOST, () => console.log(`Veb server: http://${HOST}:${PORT} (saqlash: ${STORAGE})`));
   startKeepAlive();
+  startNewsScheduler();
   await startBot();
 }
 main().catch((e) => {
