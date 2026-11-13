@@ -145,7 +145,7 @@ var defaultSettings = () => ({
     enabled: true,
     channel: "@WORLD_NEWS_1M",
     times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
-    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
+    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-2.5-flash-lite", "antigravity-preview-latest"],
     apiKey: "",
     sent: [],
     history: [],
@@ -1150,12 +1150,22 @@ function authed(req) {
 // --- News bot: Gemini bilan yangilik yaratib, kanalga post qiladi ---
 var NEWS_TOKEN = (process.env.NEWS_BOT_TOKEN || "8231778750:AAH4jJaKSZ7a_ATxSHthi_JiRWuIJ2ob33Q").trim();
 var newsBotInfo = { username: "", id: "" };
+// Model cooldown: 429/404/503 bo'lgan modellar vaqtincha o'tkazib yuboriladi,
+// shunda world-news-bot bitta modelning limitiga bog'liq bo'lib qolmaydi.
+var newsModelCooldown = new Map();
+function newsModelReady(m) {
+  const until = newsModelCooldown.get(m) || 0;
+  return Date.now() >= until;
+}
+function newsModelCooldownSet(m, ms) {
+  newsModelCooldown.set(m, Date.now() + ms);
+}
 function newsDefaults() {
   return {
     enabled: true,
     channel: "@WORLD_NEWS_1M",
     times: ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "19:30", "21:00", "22:30", "00:00"],
-    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
+    models: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-2.5-flash-lite", "antigravity-preview-latest"],
     apiKey: process.env.GEMINI_API_KEY || "",
     sent: [],
     history: [],
@@ -1248,7 +1258,10 @@ async function newsGenerate(cfg) {
     ` Faqat texnologiya, AI, gadjet yoki dasturiy ta'minotga oid yangilikni tanla — janjal, siyosat, sport va shaxsiy hayot haqida yozma.` +
     ` Post 700 belgidan oshmasin, emoji ko'p bo'lsin, oxirida "IMAGE_URL: <rasm havolasi>" qatorini qo'sh.`;
   const errors = [];
-  for (const model of cfg.models) {
+  // Avval cooldown tugagan (tirik) modellarni sinab ko'ramiz; bo'lmasa hammasini.
+  const live = cfg.models.filter((m) => newsModelReady(m));
+  const order = live.length ? live : cfg.models.slice();
+  for (const model of order) {
     try {
       const text = await newsGemini(cfg, model, prompt);
       cfg.lastModel = model;
@@ -1256,6 +1269,13 @@ async function newsGenerate(cfg) {
     } catch (e) {
       errors.push(`${model}: ${e.message}`);
       console.error(`News bot: ${model} ishlamadi -> ${e.message}`);
+      const status = Number(e && e.status) || 0;
+      const msg = String(e && e.message || "");
+      let ms = 5 * 60e3; // default 5 min
+      if (status === 404 || /no longer available/i.test(msg)) ms = 24 * 3600e3;
+      else if (status === 429) ms = 60 * 60e3;
+      else if (status === 401 || status === 403) ms = 24 * 3600e3;
+      newsModelCooldownSet(model, ms);
     }
   }
   throw new Error(`Barcha modellar ishlamadi: ${errors.slice(0, 3).join(" | ")}`);
