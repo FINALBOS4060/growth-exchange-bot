@@ -1759,6 +1759,10 @@ var server = http.createServer((req, res) => {
   if (url.pathname === "/api/news") {
     const cfg = newsCfg();
     if (req.method === "POST") {
+      if (!sameOrigin(req)) {
+        jsonOut(res, 403, { ok: false, error: "Origin rad etildi" });
+        return;
+      }
       readJsonBody(req).then((b) => {
         const times = String(b.times ?? cfg.times.join(","))
           .split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean)
@@ -1802,6 +1806,10 @@ var server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === "/api/news/post" && req.method === "POST") {
+    if (!sameOrigin(req)) {
+      jsonOut(res, 403, { ok: false, error: "Origin rad etildi" });
+      return;
+    }
     const dry = url.searchParams.get("dry") === "1";
     newsPublish(dry ? "sinov" : "qo'lda", dry).then((r) => {
       res.writeHead(r.ok ? 200 : 502, { "content-type": "application/json" });
