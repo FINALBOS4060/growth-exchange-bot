@@ -1,7 +1,13 @@
 name: Keep-alive
 
 # Render free instance 15 daqiqa trafiksiz uxlab qoladi (bot ham to'xtaydi).
-# Bu job har 10 daqiqada /healthz ni chaqirib, servisni uyg'oq tutadi.
+# Bu job har 30 daqiqada /healthz ni chaqirib, servisni uyg'oq tutadi.
+#
+# Nega 30 daqiqa: private repolarda Actions kvotasi oyiga 2000 daqiqa.
+# Har ishga tushish 1 daqiqa deb hisoblanadi, shuning uchun 10 daqiqalik
+# jadval (~4320 daqiqa/oy) kvotani oy o'rtasida tugatib qo'yardi.
+# Har 30 daqiqa = ~1440 daqiqa/oy — kvota ichida qoladi.
+# Asosiy uyg'otish baribir ilova ichida: KEEP_ALIVE=1 (har 10 daqiqa).
 #
 # Manzilni o'zgartirish: Settings -> Secrets and variables -> Actions -> Variables
 #   APP_URL = https://sizning-servis.onrender.com
@@ -9,7 +15,7 @@ name: Keep-alive
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 concurrency:
