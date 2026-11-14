@@ -2493,7 +2493,8 @@ function migrateMemberships() {
       membershipEvent(t.assignedTo, t.destinationId, "FIRST_VERIFIED", "", "ACTIVE", "migration", "member", t.id);
       n++;
     }
-    if (!m.nextCheckAt) scheduleMembershipCheck(m, Date.now() + Math.floor(Math.random() * 36e5));
+    // Boshlang'ich tekshiruvlar bir kunga taqsimlanadi (bir vaqtda bosilmasin).
+    if (!m.nextCheckAt) scheduleMembershipCheck(m, Date.now() + Math.floor(Math.random() * 24 * 36e5));
   }
   if (n) console.log(`A'zolik registriga ${n} ta eski obuna ko'chirildi`);
 }
