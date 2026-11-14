@@ -202,7 +202,8 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
         <div><label>Kanal ulash bonusi (bir marta)</label><input id="s-chlink" type="number" min="0"></div>
         <div><label>1 obunachi narxi (kredit)</label><input id="s-per" type="number" min="1"><div class="muted" style="font-size:11.5px;margin-top:4px">1 kredit = 1 obunachi</div></div>
         <div><label>Telegram obuna vazifasi</label><input id="s-tg" type="number" min="1"></div>
-        <div><label>Instagram vazifasi</label><input id="s-ig" type="number" min="1"></div>
+        <div><label>Instagram vazifasi (o'zi tasdiqlaydi)</label><input id="s-ig" type="number" min="0"><div class="muted" style="font-size:11.5px;margin-top:4px">Rasmiy tekshiruv yo'q — 0 tavsiya etiladi</div></div>
+        <div><label>Instagram uchun beriladigan kredit</label><input id="s-igself" type="number" min="0"><div class="muted" style="font-size:11.5px;margin-top:4px">Standart 0: tasdiqlanmagan amal kredit bermaydi</div></div>
         <div><label>Referal bonusi</label><input id="s-ref" type="number" min="0"></div>
       </div>
       <div class="grid2" style="margin-top:12px">
@@ -533,6 +534,7 @@ async function loadSettings() {
   $('#s-per').value = s.creditPerSubscriber || 1;
   $('#s-tg').value = s.creditRewardTelegram;
   $('#s-ig').value = s.creditRewardInstagram;
+  $('#s-igself').value = s.creditRewardInstagramSelfConfirmed || 0;
   $('#s-ref').value = s.creditRewardReferral;
   $('#s-paused').checked = !!s.isBotPaused;
   $('#s-frozen').checked = !!s.areOrdersFrozen;
@@ -547,7 +549,8 @@ $('#s-save').onclick = async () => {
       creditRewardChannelLink: Number($('#s-chlink').value) || 0,
       creditPerSubscriber: Number($('#s-per').value) || 1,
       creditRewardTelegram: Number($('#s-tg').value) || 1,
-      creditRewardInstagram: Number($('#s-ig').value) || 1,
+      creditRewardInstagram: Number($('#s-ig').value) || 0,
+      creditRewardInstagramSelfConfirmed: Number($('#s-igself').value) || 0,
       creditRewardReferral: Number($('#s-ref').value) || 0,
       isBotPaused: $('#s-paused').checked,
       areOrdersFrozen: $('#s-frozen').checked,

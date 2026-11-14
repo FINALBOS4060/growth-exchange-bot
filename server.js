@@ -131,6 +131,9 @@ var HOST = process.env.IP || "0.0.0.0";
 var defaultSettings = () => ({
   creditRewardTelegram: 100,
   creditRewardInstagram: 100,
+  // Instagram'ni rasmiy tekshirib bo'lmaydi (o'zi tasdiqlaydi). Shuning uchun
+  // unga sarflanadigan kredit berilmaydi — admin xohlasa shu qiymatni oshiradi.
+  creditRewardInstagramSelfConfirmed: 0,
   creditRewardReferral: 300,
   // 1 obunachi narxi (buyurtmada). 1 kredit = 1 obunachi.
   creditPerSubscriber: 1,
@@ -182,6 +185,13 @@ var db = {
   complaints: [],
   referrals: [],
   sponsors: [],
+  // A'zolik (membership) registri: har bir (foydalanuvchi, kanal) juftligi uchun
+  // bitta yozuv + voqealar tarixi + rejalashtirilgan tekshiruv navbati.
+  memberships: [],
+  membershipEvents: [],
+  verificationJobs: [],
+  sponsorMemberships: [],
+  notifPeriods: [],
   ctlRequests: [],
   verifyLog: [],
   adminUsers: [],
@@ -960,7 +970,7 @@ function getUser(from, chatId) {
       notif: { subscribers: true, referrals: true, orders: true, technical: true }
     };
     if (bonus > 0) {
-      addTx(db.users[key], bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi");
+      addTx(db.users[key], bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi", { idempotencyKey: `signup:${db.users[key].id}` });
       console.log(`Yangi foydalanuvchi ${from.id} — +${bonus} kredit sovg'a`);
     }
   }
@@ -972,7 +982,12 @@ function getUser(from, chatId) {
   u.displayName = [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || u.displayName;
   return { user: u, isNew };
 }
+// Har bir kredit harakati jurnalga yoziladi. `idempotencyKey` berilsa, shu
+// kalit bilan yozuv mavjud bo'lsa hech narsa qo'shilmaydi — takroriy mukofot
+// yoki takroriy qaytimning oldini oladi (spec §8).
 function addTx(u, amount, type, description, extra = {}) {
+  const key = extra.idempotencyKey || "";
+  if (key && db.transactions.some((t) => t.idempotencyKey === key)) return false;
   db.transactions.push({
     id: nid("tx"),
     userId: u.id,
@@ -982,9 +997,12 @@ function addTx(u, amount, type, description, extra = {}) {
     description,
     balanceAfter: u.credits.available,
     createdAt: nowStr(),
+    idempotencyKey: key,
     ...extra
   });
-  if (db.transactions.length > 2e4) db.transactions.splice(0, 5e3);
+  // Tarixiy yozuvlar o'chirilmaydi (spec §8): faqat hajm katta bo'lsa ogohlantiramiz.
+  if (db.transactions.length === 2e4) console.warn("Tranzaksiyalar 20000 taga yetdi — jurnal o'chirilmaydi, arxivlash rejasi kerak.");
+  return true;
 }
 // Balansdagi kreditni foydalanuvchining o'z kanaliga avtomatik buyurtmaga
 // aylantiradi (1 kredit = 1 obunachi). Shu tufayli kredit bo'sh turmaydi va
@@ -1036,7 +1054,7 @@ function autoOrderFromBalance(u) {
   }
   ch.totalRequested += qty;
   ch.pendingSubscriptions += qty;
-  addTx(u, -cost, "order_spend", "Avtomatik buyurtma: " + ch.title + " x" + qty, { orderId: o.id });
+  addTx(u, -cost, "order_spend", "Avtomatik buyurtma: " + ch.title + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}:${o.requestedQuantity}` });
   save();
   return { channel: ch, qty, cost, order: o };
 }
@@ -1119,6 +1137,122 @@ function checkOrderComplete(o) {
 ${esc(o.destinationTitle)}: ${o.verifiedQuantity} ta obunachi.`);
   }
 }
+// ===== A'zolik registri (memberships) =====
+// Har bir ma'lum (foydalanuvchi, kanal) juftligi uchun yagona yozuv. 24 soatlik
+// qayta tekshiruv navbati shu yozuvga tayanadi.
+var MEM_RECHECK_MS = 24 * 36e5;
+var MEM_RECHECK_JITTER_MS = 3 * 36e5;
+function memRecheckDelay() {
+  // 24 soat + 0..3 soat jitter — barcha tekshiruvlar bir vaqtga to'planmaydi.
+  return MEM_RECHECK_MS + Math.floor(Math.random() * MEM_RECHECK_JITTER_MS);
+}
+function ensureMembership(userId, channelId) {
+  let m = db.memberships.find((x) => x.userId === userId && x.channelId === channelId);
+  if (m) return m;
+  const t = (/* @__PURE__ */ new Date()).toISOString();
+  m = {
+    id: nid("mem"),
+    userId,
+    channelId,
+    status: "PENDING",
+    firstSeenAt: t,
+    firstVerifiedAt: "",
+    lastCheckedAt: "",
+    nextCheckAt: "",
+    lastMembershipChangeAt: "",
+    lastCheckResult: "",
+    consecutiveCheckErrors: 0,
+    createdAt: t,
+    updatedAt: t
+  };
+  db.memberships.push(m);
+  return m;
+}
+function membershipEvent(userId, channelId, eventType, oldStatus, newStatus, source, apiResult, taskId) {
+  db.membershipEvents.push({
+    id: nid("mev"),
+    userId,
+    channelId,
+    eventType,
+    oldStatus: oldStatus || "",
+    newStatus: newStatus || "",
+    source: source || "",
+    eventTime: (/* @__PURE__ */ new Date()).toISOString(),
+    apiResult: apiResult || "",
+    relatedTaskId: taskId || ""
+  });
+  if (db.membershipEvents.length > 5e4) db.membershipEvents.splice(0, 1e4);
+}
+// Rejalashtirilgan tekshiruvni baza navbatiga yozadi (in-memory timer emas).
+function scheduleMembershipCheck(m, atMs, jobType = "RECHECK") {
+  const at = new Date(atMs).toISOString();
+  m.nextCheckAt = at;
+  m.updatedAt = at;
+  const key = `${jobType}:${m.userId}:${m.channelId}:${Math.floor(atMs / 36e5)}`;
+  if (db.verificationJobs.some((j) => j.idempotencyKey === key)) return null;
+  const job = {
+    id: nid("job"),
+    membershipId: m.id,
+    userId: m.userId,
+    channelId: m.channelId,
+    jobType,
+    scheduledAt: at,
+    status: "PENDING",
+    attemptCount: 0,
+    lastError: "",
+    lockedAt: "",
+    completedAt: "",
+    idempotencyKey: key
+  };
+  db.verificationJobs.push(job);
+  return job;
+}
+function taskForPair(userId, channelId) {
+  return db.tasks.filter((t) => t.assignedTo === userId && t.destinationId === channelId)
+    .sort((a, b) => b.queueSequence - a.queueSequence)[0];
+}
+function markUnsubscribed(userId, channelId) {
+  const t = taskForPair(userId, channelId);
+  if (t && t.status === "VERIFIED") {
+    t.status = "CANCELLED";
+    t.unsubscribed = true;
+    t.checkedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const o = db.orders.find((x) => x.id === t.orderId);
+    if (o && o.status === "active") {
+      o.verifiedQuantity = Math.max(0, o.verifiedQuantity - 1);
+      o.pendingQuantity++;
+    }
+  }
+  const dest = destOf(channelId);
+  if (dest) {
+    dest.verifiedSubscribers = Math.max(0, (dest.verifiedSubscribers || 0) - 1);
+    dest.activeSubscribers = Math.max(0, (dest.activeSubscribers || 0) - 1);
+    dest.unsubscribedCount = (dest.unsubscribedCount || 0) + 1;
+  }
+  return t;
+}
+// Qayta obuna bo'ldi — statistika tiklanadi, lekin YANGI kredit berilmaydi.
+function markRejoined(userId, channelId) {
+  const t = taskForPair(userId, channelId);
+  if (t && t.unsubscribed) {
+    t.status = "VERIFIED";
+    t.unsubscribed = false;
+    t.rejoined = true;
+    t.checkedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const o = db.orders.find((x) => x.id === t.orderId);
+    if (o && o.status === "active") {
+      o.verifiedQuantity++;
+      o.pendingQuantity = Math.max(0, o.pendingQuantity - 1);
+    }
+    const dest = destOf(channelId);
+    if (dest) {
+      dest.verifiedSubscribers = (dest.verifiedSubscribers || 0) + 1;
+      dest.activeSubscribers = (dest.activeSubscribers || 0) + 1;
+    }
+    return t;
+  }
+  return null;
+}
 function applyVerified(u, t) {
   const o = db.orders.find((x) => x.id === t.orderId);
   if (!o || o.status === "cancelled" || o.status === "completed") {
@@ -1129,6 +1263,9 @@ function applyVerified(u, t) {
   t.status = self ? "SELF_CONFIRMED" : "VERIFIED";
   t.verifiedAt = (/* @__PURE__ */ new Date()).toISOString();
   t.checkedAt = t.verifiedAt;
+  // O'zi tasdiqlagan (Instagram) amal tasdiqlangan mukofot bermaydi (spec §2).
+  // Administrator xohlasa panelda 0 dan katta qiymat qo'yadi.
+  const reward = self ? Math.max(0, Number(S().creditRewardInstagramSelfConfirmed) || 0) : Math.max(0, Number(t.rewardCredits) || 0);
   o.verifiedQuantity++;
   o.pendingQuantity = Math.max(0, o.pendingQuantity - 1);
   const owner = userById(o.userId);
@@ -1150,14 +1287,48 @@ function applyVerified(u, t) {
       dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - 1);
     }
   }
-  u.credits.available += t.rewardCredits;
-  self ? u.credits.selfReportedRewards += t.rewardCredits : u.credits.verifiedRewards += t.rewardCredits;
+  if (reward > 0) {
+    u.credits.available += reward;
+    self ? u.credits.selfReportedRewards += reward : u.credits.verifiedRewards += reward;
+    addTx(u, reward, "reward_task", `${self ? "Instagram (o\u2018zi tasdiqlagan)" : "Telegram"}: ${t.destinationTitle}`, {
+      orderId: o.id,
+      channelId: t.destinationId,
+      relatedTaskId: t.id,
+      idempotencyKey: `reward:${t.id}`
+    });
+  } else {
+    self && (u.credits.selfReportedRewards += 0);
+    addTx(u, 0, "reward_task", `${t.destinationTitle} (Instagram \u2014 o\u2018zi tasdiqlagan, kredit berilmadi)`, {
+      orderId: o.id,
+      channelId: t.destinationId,
+      relatedTaskId: t.id,
+      idempotencyKey: `reward:${t.id}`,
+      nonPayable: true
+    });
+  }
   u.completedTasksCount++;
-  addTx(u, t.rewardCredits, "reward_task", `${self ? "Instagram (o\u2018zi tasdiqlagan)" : "Telegram"}: ${t.destinationTitle}`, { orderId: o.id, channelId: t.destinationId });
+  if (!self) {
+    // Telegram a'zoligi tasdiqlandi — registrga yozamiz va 24 soatlik qayta
+    // tekshiruvni rejalashtiramiz.
+    const m = ensureMembership(u.id, t.destinationId);
+    const oldStatus = m.status;
+    const at = (/* @__PURE__ */ new Date()).toISOString();
+    m.status = "ACTIVE";
+    m.firstVerifiedAt = m.firstVerifiedAt || at;
+    m.lastCheckedAt = at;
+    m.lastCheckResult = "member";
+    m.consecutiveCheckErrors = 0;
+    m.updatedAt = at;
+    if (oldStatus !== "ACTIVE") {
+      m.lastMembershipChangeAt = at;
+      membershipEvent(u.id, t.destinationId, oldStatus === "CANCELLED" ? "REJOINED" : "FIRST_VERIFIED", oldStatus, "ACTIVE", "task_verify", "member", t.id);
+    }
+    scheduleMembershipCheck(m, Date.now() + memRecheckDelay());
+  }
   db.verifyLog.push({ ownerId: o.userId, title: t.destinationTitle, platform: t.platform, at: Date.now() });
   if (db.verifyLog.length > 5e4) db.verifyLog.splice(0, 1e4);
   checkOrderComplete(o);
-  return t.rewardCredits;
+  return reward;
 }
 function tryQualifyReferral(u) {
   const ref = db.referrals.find((r) => r.referredUserId === u.id);
@@ -1243,6 +1414,23 @@ async function verifyBatch(u, platform, chat) {
     for (const t of batch) lookup[t.id] = { verified: Date.now() - Date.parse(t.createdAt) > 15e3 };
   }
   const out = processTaskBatchVerification(batch, lookup);
+  // Har bir tekshiruv natijasi alohida saqlanadi (spec §3-A, 4-qadam).
+  const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
+  for (const t of batch) {
+    const real = db.tasks.find((x) => x.id === t.id);
+    if (!real) continue;
+    const res = lookup[t.id] || {};
+    real.lastCheckResult = res.isApiError ? "error" : res.verified ? "member" : "not_member";
+    real.checkedAt = checkedAt;
+    if (res.isApiError) {
+      // Texnik xato — obunadan chiqish emas; backoff bilan qayta uriniladi.
+      real.consecutiveCheckErrors = (real.consecutiveCheckErrors || 0) + 1;
+      real.retryAt = new Date(Date.now() + Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, real.consecutiveCheckErrors)))).toISOString();
+    } else {
+      real.consecutiveCheckErrors = 0;
+      real.retryAt = "";
+    }
+  }
   let earned = 0, firstTg = false;
   for (const vt of out.verifiedTasks) {
     const real = db.tasks.find((x) => x.id === vt.id);
@@ -1507,10 +1695,26 @@ function catLabel(key) {
   return Number.isInteger(n) && CATEGORIES[n] ? CATEGORIES[n].label : null;
 }
 
+// Homiy kanallar alohida jadvalda saqlanadi — oddiy vazifalar bilan
+// aralashtirilmaydi (spec §3-C, §4).
+function ensureSponsorMembership(userId, sponsorId) {
+  let r = db.sponsorMemberships.find((x) => x.userId === userId && x.sponsorId === sponsorId);
+  if (!r) {
+    r = { id: nid("sm"), userId, sponsorId, membershipStatus: "UNKNOWN", lastCheckedAt: "", lastCheckResult: "", updatedAt: "" };
+    db.sponsorMemberships.push(r);
+  }
+  return r;
+}
 async function sponsorGate(u, chat) {
   const missing = [];
   for (const sp of db.sponsors.filter((s) => s.isActive && s.isMandatory)) {
-    if (await checkMember(sp.channelId, u.telegramId) === "not_member") missing.push(sp);
+    const res = await checkMember(sp.channelId, u.telegramId);
+    const rec = ensureSponsorMembership(u.id, sp.id);
+    rec.lastCheckedAt = (/* @__PURE__ */ new Date()).toISOString();
+    rec.lastCheckResult = res;
+    rec.membershipStatus = res === "member" ? "MEMBER" : res === "error" ? "CHECK_ERROR" : "NOT_MEMBER";
+    rec.updatedAt = rec.lastCheckedAt;
+    if (res === "not_member") missing.push(sp);
   }
   if (!missing.length) return true;
   await send(chat, TR(u, "\u{1F4E2} Botdan foydalanish uchun quyidagi homiy kanallarga obuna bo\u2018ling:"), inline([
@@ -1583,7 +1787,7 @@ async function createOrderConfirmed(u, destId, qty, chat) {
   db.orders.push(o);
   platform === "telegram" ? (dest.totalRequested += qty, dest.pendingSubscriptions += qty) : (dest.totalRequested += qty, dest.pendingFollowers += qty);
   moderationScan("order", { userId: u.id, userName: u.displayName, channelId: o.destinationId, title: o.destinationTitle, qty });
-  addTx(u, -chk.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id });
+  addTx(u, -chk.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}` });
   u.state = null;
   save();
   return send(chat, T(u, "ord_created", { title: esc(o.destinationTitle), qty, total: chk.totalCost }), menuFor(u));
@@ -1606,7 +1810,7 @@ async function cancelOrder(u, orderId, chat) {
     dest.pendingSubscriptions !== void 0 && (dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - refundableUnits));
     dest.pendingFollowers !== void 0 && (dest.pendingFollowers = Math.max(0, dest.pendingFollowers - refundableUnits));
   }
-  addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id });
+  addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: `refund:${o.id}` });
   save();
   return send(chat, TRV(u, "↩️ <b>Buyurtma bekor qilindi</b>\n\nKelgan obunachilar saqlanadi ({verified} ta), bajarilmagan {unfulfilled} ta uchun <b>{refund} kredit</b> qaytarildi.\n{balance}", { verified: o.verifiedQuantity, unfulfilled: refundableUnits, refund: refundCredits, balance: balanceLine(u) }), menuFor(u));
 }
@@ -1647,7 +1851,7 @@ async function addChannel(u, text, chat) {
   if (linkBonus > 0) {
     u.channelBonusGiven = true;
     u.credits.available += linkBonus;
-    addTx(u, linkBonus, "channel_link_bonus", "Kanal ulandi: " + ch.title);
+    addTx(u, linkBonus, "channel_link_bonus", "Kanal ulandi: " + ch.title, { idempotencyKey: `chlink:${ch.id}` });
   }
   u.state = null;
   save();
@@ -2141,9 +2345,15 @@ async function hourlyReport() {
   const fmt = (ms) => new Date(ms + 5 * 36e5).toISOString().slice(11, 16);
   for (const [uid, items] of Object.entries(per)) {
     const u = userById(uid);
-    if (!u || !u.notifications || !notifOn(u, "subscribers")) continue;
-    // Idempotentlik: bir soat uchun ikkinchi marta yubormaymiz
-    if (u.lastNotifHour === hour) continue;
+    if (!u) continue;
+    // Idempotentlik: davr yozuvi bazada — restart bo'lsa ham takror yuborilmaydi.
+    const pkey = `${uid}:${from}:subscribers`;
+    if (db.notifPeriods.some((p) => p.key === pkey)) continue;
+    if (!u.notifications || !notifOn(u, "subscribers")) {
+      db.notifPeriods.push({ id: nid("np"), key: pkey, userId: uid, periodStart: from, periodEnd: to, notificationType: "subscribers", sentAt: "", status: "skipped" });
+      continue;
+    }
+    db.notifPeriods.push({ id: nid("np"), key: pkey, userId: uid, periodStart: from, periodEnd: to, notificationType: "subscribers", sentAt: nowStr(), status: "sent" });
     u.lastNotifHour = hour;
     const tgN = Object.values(items).filter((i) => i.platform === "telegram").reduce((a, i) => a + i.n, 0);
     const igN = Object.values(items).filter((i) => i.platform === "instagram").reduce((a, i) => a + i.n, 0);
@@ -2155,31 +2365,143 @@ async function hourlyReport() {
 ` + Object.entries(items).map(([t, i]) => `\u2022 ${esc(t)}: +${i.n}`).join("\n"));
   }
 }
+// ===== 24 soatlik a'zolik tekshiruvi ishchisi =====
+// Navbat bazada (verificationJobs). Har bir tikda faqat cheklangan partiya
+// olinadi, natija darhol yoziladi, keyingi tekshiruv 24 soat + jitter bilan
+// rejalashtiriladi. Jarayon qulasa, navbat bazada qoladi (restart-safe).
+var VERIFY_BATCH = Math.max(1, Number(process.env.VERIFY_BATCH) || 25);
+var VERIFY_LOCK_MS = 10 * 6e4;
+function recoverStaleJobs() {
+  let n = 0;
+  for (const j of db.verificationJobs) {
+    if (j.status === "RUNNING" && Date.parse(j.lockedAt || "0") < Date.now() - VERIFY_LOCK_MS) {
+      j.status = "PENDING";
+      j.lockedAt = "";
+      n++;
+    }
+  }
+  return n;
+}
+async function runVerificationJob(job) {
+  const at = () => (/* @__PURE__ */ new Date()).toISOString();
+  job.status = "RUNNING";
+  job.lockedAt = at();
+  const u = userById(job.userId);
+  const ch = db.channels.find((c) => c.id === job.channelId);
+  const m = db.memberships.find((x) => x.id === job.membershipId) || ensureMembership(job.userId, job.channelId);
+  // Kanal uzilgan yoki foydalanuvchi yo'q — monitoring to'xtaydi, tarix qoladi.
+  if (!u || !ch || ch.disconnectedAt) {
+    job.status = "DONE";
+    job.completedAt = at();
+    job.lockedAt = "";
+    job.lastError = !u ? "foydalanuvchi yo'q" : !ch ? "kanal yo'q" : "kanal uzilgan";
+    return "skipped";
+  }
+  const r = await checkMember(ch.channelId, u.telegramId);
+  const now = at();
+  m.lastCheckedAt = now;
+  m.updatedAt = now;
+  if (r === "error") {
+    // Texnik xato = obunadan chiqish EMAS.
+    m.status = m.status === "ACTIVE" ? "ACTIVE" : "CHECK_ERROR";
+    m.lastCheckResult = "error";
+    m.consecutiveCheckErrors = (m.consecutiveCheckErrors || 0) + 1;
+    membershipEvent(job.userId, job.channelId, "CHECK_ERROR", m.status, m.status, "recheck", "error", "");
+    job.attemptCount = (job.attemptCount || 0) + 1;
+    job.lastError = "Telegram API xatosi";
+    const backoff = Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, job.attemptCount)));
+    job.status = "PENDING";
+    job.lockedAt = "";
+    job.scheduledAt = new Date(Date.now() + backoff).toISOString();
+    m.nextCheckAt = job.scheduledAt;
+    return "error";
+  }
+  job.attemptCount = 0;
+  job.lastError = "";
+  if (r === "member") {
+    const oldStatus = m.status;
+    const wasInactive = oldStatus !== "ACTIVE";
+    m.status = "ACTIVE";
+    m.lastCheckResult = "member";
+    m.consecutiveCheckErrors = 0;
+    if (!m.firstVerifiedAt) m.firstVerifiedAt = now;
+    if (wasInactive) {
+      m.lastMembershipChangeAt = now;
+      membershipEvent(job.userId, job.channelId, "REJOINED", oldStatus, "ACTIVE", "recheck", "member", "");
+      markRejoined(job.userId, job.channelId);
+    } else {
+      membershipEvent(job.userId, job.channelId, "RECHECK_ACTIVE", "ACTIVE", "ACTIVE", "recheck", "member", "");
+    }
+  } else {
+    const old = m.status;
+    m.status = "CANCELLED";
+    m.lastCheckResult = "not_member";
+    m.consecutiveCheckErrors = 0;
+    if (old !== "CANCELLED") {
+      m.lastMembershipChangeAt = now;
+      membershipEvent(job.userId, job.channelId, "UNSUBSCRIBED", old, "CANCELLED", "recheck", "not_member", "");
+      markUnsubscribed(job.userId, job.channelId);
+    }
+  }
+  job.status = "DONE";
+  job.completedAt = at();
+  job.lockedAt = "";
+  // Keyingi tekshiruv: 24 soat + jitter (navbatga yangi job).
+  scheduleMembershipCheck(m, Date.now() + memRecheckDelay());
+  return r;
+}
+async function processVerificationJobs(limit = VERIFY_BATCH) {
+  const now = Date.now();
+  const due = db.verificationJobs
+    .filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= now)
+    .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt))
+    .slice(0, limit);
+  if (!due.length) return 0;
+  for (const job of due) {
+    try {
+      await runVerificationJob(job);
+    } catch (e) {
+      job.status = "PENDING";
+      job.lockedAt = "";
+      job.attemptCount = (job.attemptCount || 0) + 1;
+      job.lastError = String(e && e.message || e).slice(0, 160);
+      job.scheduledAt = new Date(Date.now() + Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, job.attemptCount)))).toISOString();
+      console.error("A'zolik tekshiruvi xatosi:", job.lastError);
+    }
+    await new Promise((res) => setTimeout(res, 120));
+  }
+  save();
+  return due.length;
+}
+// Mavjud (avval tasdiqlangan) a'zoliklar uchun registrni to'ldirish — eski
+// ma'lumot yo'qolmaydi, keyingi tekshiruv navbatga qo'yiladi.
+function migrateMemberships() {
+  let n = 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (const t of db.tasks) {
+    if (t.platform !== "telegram" || t.status !== "VERIFIED" || !t.destinationId) continue;
+    const k = t.assignedTo + "|" + t.destinationId;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const m = ensureMembership(t.assignedTo, t.destinationId);
+    if (!m.firstVerifiedAt) {
+      m.status = "ACTIVE";
+      m.firstVerifiedAt = t.verifiedAt || (/* @__PURE__ */ new Date()).toISOString();
+      m.lastCheckedAt = m.lastCheckedAt || t.checkedAt || "";
+      m.lastCheckResult = "member";
+      m.lastMembershipChangeAt = m.firstVerifiedAt;
+      membershipEvent(t.assignedTo, t.destinationId, "FIRST_VERIFIED", "", "ACTIVE", "migration", "member", t.id);
+      n++;
+    }
+    if (!m.nextCheckAt) scheduleMembershipCheck(m, Date.now() + Math.floor(Math.random() * 36e5));
+  }
+  if (n) console.log(`A'zolik registriga ${n} ta eski obuna ko'chirildi`);
+}
 async function maintenance() {
   const cutoff = Date.now() - 48 * 36e5;
   for (const t of db.tasks) if (OPEN.has(t.status) && Date.parse(t.createdAt) < cutoff) t.status = "CANCELLED";
-  const weekAgo = Date.now() - 7 * 864e5;
-  const cand = db.tasks.filter((t) => t.status === "VERIFIED" && t.platform === "telegram" && Date.parse(t.verifiedAt || "") > weekAgo).sort((a, b) => Date.parse(a.checkedAt || "0") - Date.parse(b.checkedAt || "0")).slice(0, 40);
-  for (const t of cand) {
-    const dest = destOf(t.destinationId);
-    const u = userById(t.assignedTo);
-    if (!dest || !u) continue;
-    const r = await checkMember(dest.channelId, u.telegramId);
-    t.checkedAt = (/* @__PURE__ */ new Date()).toISOString();
-    if (r === "not_member") {
-      t.status = "CANCELLED";
-      t.unsubscribed = true;
-      const o = db.orders.find((x) => x.id === t.orderId);
-      if (o && o.status === "active") {
-        o.verifiedQuantity = Math.max(0, o.verifiedQuantity - 1);
-        o.pendingQuantity++;
-      }
-      dest.verifiedSubscribers = Math.max(0, dest.verifiedSubscribers - 1);
-      dest.activeSubscribers = Math.max(0, dest.activeSubscribers - 1);
-      dest.unsubscribedCount++;
-    }
-    await new Promise((r2) => setTimeout(r2, 100));
-  }
+  recoverStaleJobs();
+  await processVerificationJobs();
   save();
 }
 // Har bir bot o'z long-polling tsiklini yuradi, lekin hammasi bitta db'ga yozadi.
@@ -2613,7 +2935,7 @@ function cancelOrderAdmin(o) {
     owner.credits.available += refundCredits;
     owner.credits.refunded += refundCredits;
     owner.activeOrdersCount = Math.max(0, owner.activeOrdersCount - 1);
-    addTx(owner, refundCredits, "order_refund", `Admin bekor qildi: ${o.destinationTitle}`, { orderId: o.id });
+    addTx(owner, refundCredits, "order_refund", `Admin bekor qildi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: `refund:${o.id}` });
     notify(owner, `\u21A9\uFE0F Buyurtmangiz admin tomonidan bekor qilindi.\n${esc(o.destinationTitle)}\n${refundableUnits} ta uchun <b>${refundCredits}</b> kredit qaytarildi.`);
   }
   for (const t of db.tasks) if (t.orderId === o.id && OPEN.has(t.status)) t.status = "CANCELLED";
@@ -3529,6 +3851,28 @@ var server = http.createServer((req, res) => {
             }
           };
         }
+        case "jobs": {
+          // Operatsion qo'lda ishga tushirish (panel/tekshiruv uchun).
+          if (!isPost) {
+            return {
+              jobsPending: db.verificationJobs.filter((j) => j.status === "PENDING").length,
+              memberships: db.memberships.length,
+              events: db.membershipEvents.length
+            };
+          }
+          const what = String(b.action || "verify");
+          if (what === "verify") {
+            const n = await processVerificationJobs(Number(b.limit) || VERIFY_BATCH);
+            audit(req, "jobs_verify", String(n));
+            return { ok: true, processed: n };
+          }
+          if (what === "hourly") {
+            await hourlyReport();
+            audit(req, "jobs_hourly", "ok");
+            return { ok: true };
+          }
+          throw new Error("Noma'lum amal");
+        }
         case "backup": {
           if (!isPost) return { items: await listBackups(), lastBackupAt: db.lastBackupAt };
           const ok = await backupNow("qo'lda");
@@ -3550,6 +3894,16 @@ var server = http.createServer((req, res) => {
               ordersActive: db.orders.filter((o) => o.status === "active").length,
               complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
               appealsNew: db.appeals.filter((a) => a.status === "NEW").length
+            },
+            memberships: {
+              total: db.memberships.length,
+              active: db.memberships.filter((m) => m.status === "ACTIVE").length,
+              cancelled: db.memberships.filter((m) => m.status === "CANCELLED").length,
+              checkError: db.memberships.filter((m) => m.status === "CHECK_ERROR").length,
+              jobsPending: db.verificationJobs.filter((j) => j.status === "PENDING").length,
+              jobsDone: db.verificationJobs.filter((j) => j.status === "DONE").length,
+              dueNow: db.verificationJobs.filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= Date.now()).length,
+              events: db.membershipEvents.length
             },
             bots: botsList().map((b) => ({
               id: b.id,
@@ -3852,7 +4206,7 @@ var server = http.createServer((req, res) => {
             const { news, bots, ...rest } = s;
             return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
           }
-          for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardReferral", "creditPerSubscriber"]) {
+          for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardInstagramSelfConfirmed", "creditRewardReferral", "creditPerSubscriber"]) {
             if (b[k] === void 0) continue;
             const n = Number(b[k]);
             if (!Number.isFinite(n) || n < 0) throw new Error(k + " noto'g'ri son");
@@ -4043,6 +4397,11 @@ function migrateSettings() {
     save();
     console.log(`Qoida: 1 obunachi = ${s.creditPerSubscriber} kredit, obuna mukofoti ${s.creditRewardTelegram}, referal ${s.creditRewardReferral}`);
   }
+  if (typeof s.creditRewardInstagramSelfConfirmed !== "number") {
+    s.creditRewardInstagramSelfConfirmed = 0;
+    save();
+    console.log("Sozlama: Instagram o'zi tasdiqlagan vazifa uchun mukofot 0 (rasmiy tekshiruv yo'q)");
+  }
   if (typeof s.autoOrderCredits !== "boolean") {
     s.autoOrderCredits = true;
     save();
@@ -4059,6 +4418,8 @@ async function main() {
   await openStore();
   botsInit();
   migrateSettings();
+  migrateMemberships();
+  save();
   // Avvaldan yig‘ilgan kreditlar ham buyurtmaga aylansin (bir marta ishga tushishda).
   if (S().autoOrderCredits) {
     let n = 0;
@@ -4076,7 +4437,8 @@ async function main() {
   startNewsScheduler();
   setInterval(() => hourlyReport().catch((e) => console.error(e)), 6e4);
   startBackupJob();
-  setInterval(() => maintenance().catch((e) => console.error(e)), 15 * 6e4);
+  // Muddati kelgan a'zolik tekshiruvlari: cheklangan partiya, har 2 daqiqada.
+  setInterval(() => maintenance().catch((e) => console.error(e)), 2 * 6e4);
   setInterval(() => {
     for (const b of botsList()) {
       if (!b.enabled || !b.token || botRuns.has(b.id)) continue;
