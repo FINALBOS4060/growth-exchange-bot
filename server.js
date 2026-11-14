@@ -1496,7 +1496,8 @@ async function showTasks(u, platform, chat, next) {
   rows.push([{ text: T(u, "tasks_btn_refresh"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}` }, { text: T(u, "tasks_btn_next"), callback_data: `tasks:${platform === "telegram" ? "tg" : "ig"}:next` }]);
   return send(chat, text, inline(rows));
 }
-var channelsOf = (u) => db.channels.filter((c) => c.ownerId === u.id || c.controllers.some((k) => k.userId === u.id));
+// Faqat faol kanallar ro'yxatda; uzilganlari tarix uchun bazada qoladi.
+var channelsOf = (u) => db.channels.filter((c) => !c.disconnectedAt && (c.ownerId === u.id || (c.controllers || []).some((k) => k.userId === u.id)));
 async function showChannels(u, chat) {
   const chs = channelsOf(u);
   const list = chs.length
@@ -1824,10 +1825,22 @@ async function addChannel(u, text, chat) {
   if (!botMe) return send(chat, TR(u, "\u274C Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari \u2192 Administratorlar \u2192 botni qo\u2018shib, qayta yuboring."));
   const me = await tg("getChatMember", { chat_id: ch.id, user_id: u.telegramId });
   if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, TR(u, "\u274C Siz bu kanalning administratori emassiz.\n\nFaqat o\u2018zingiz boshqaradigan kanalni ulash mumkin."));
-  const existing = db.channels.find((c) => c.channelId === String(ch.id));
+  const existing = db.channels.find((c) => c.channelId === String(ch.id) && c.ownerId === u.id && c.disconnectedAt);
   if (existing) {
+    // Avval uzilgan kanal qayta ulanmoqda — tarix saqlanadi, yangi yozuv yaratilmaydi.
+    existing.status = "active";
+    existing.disconnectedAt = "";
+    existing.title = ch.title;
+    existing.username = ch.username || uname;
+    existing.botHasAdminRights = true;
     u.state = null;
-    return send(chat, existing.ownerId === u.id ? TR(u, "Bu kanal allaqachon ulangan — qayta ulash shart emas.") : TR(u, "❌ Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, “🔑 Kod kiritish” orqali nazoratchi bo‘lasiz."), menuFor(u));
+    save();
+    return send(chat, T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) }) + TR(u, "\n♻️ Kanal qayta ulandi — oldingi tarix saqlanib qoldi."), menuFor(u));
+  }
+  const existing2 = db.channels.find((c) => c.channelId === String(ch.id) && !c.disconnectedAt);
+  if (existing2) {
+    u.state = null;
+    return send(chat, existing2.ownerId === u.id ? TR(u, "Bu kanal allaqachon ulangan — qayta ulash shart emas.") : TR(u, "❌ Bu kanal boshqa foydalanuvchida ulangan.\n\nUning egasi sizga bir martalik kod bersa, “🔑 Kod kiritish” orqali nazoratchi bo‘lasiz."), menuFor(u));
   }
   db.channels.push({
     id: nid("ch"),
@@ -2120,8 +2133,23 @@ async function handleCallback(cq) {
       for (const o of db.orders.filter((x) => x.destinationId === ch.id && x.status === "active")) {
         refunded += cancelOrderAdmin(o).refundCredits || 0;
       }
-      db.channels = db.channels.filter((x) => x.id !== ch.id);
+      // Kanal yozuvi O'CHIRILMAYDI: tarix, a'zoliklar va oxirgi tasdiqlangan
+      // obunachilar soni snapshot sifatida saqlanadi (spec §7, §19).
+      ch.status = "disconnected";
+      ch.disconnectedAt = nowStr();
+      ch.lastConfirmedActiveSubscribers = ch.activeSubscribers || 0;
+      ch.lastConfirmedVerifiedSubscribers = ch.verifiedSubscribers || 0;
       for (const t of db.tasks) if (t.destinationId === ch.id && OPEN.has(t.status)) t.status = "CANCELLED";
+      // Uzilgan kanal uchun yangi monitoring job yaratilmaydi; mavjudlari yopiladi.
+      for (const j of db.verificationJobs) {
+        if (j.channelId === ch.id && j.status === "PENDING") {
+          j.status = "DONE";
+          j.completedAt = nowStr();
+          j.lockedAt = "";
+          j.lastError = "kanal uzilgan";
+        }
+      }
+      for (const m of db.memberships) if (m.channelId === ch.id) m.nextCheckAt = "";
       save();
       return send(chat, TRV(u, "✅ <b>{title}</b> uzildi.", { title: esc(ch.title) }) + (refunded ? TRV(u, "\n↩️ {refund} kredit qaytarildi.", { refund: refunded }) : "") + `\n\n${balanceLine(u)}`, menuFor(u));
     }

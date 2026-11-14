@@ -68,6 +68,13 @@ Har bir job: tekshir → holatni yoz → keyingi 24 soatlik jobni rejalashtir �
 Jarayon qulasa, `RUNNING` job 10 daqiqadan keyin `PENDING` ga qaytadi va navbat
 bazada qoladi (restart-safe).
 
+**Kanal uzilganda.** `chdely` kanal yozuvini o'chirmaydi: `status="disconnected"`,
+`disconnectedAt` va `lastConfirmedActiveSubscribers` snapshot yoziladi, faol
+buyurtmalar bekor qilinib kredit qaytariladi, ochiq vazifalar `CANCELLED` bo'ladi,
+shu kanalning `PENDING` monitoring joblari `DONE` ("kanal uzilgan") qilinadi va
+a'zolik yozuvlari saqlanadi. Qayta ulanganda o'sha yozuv tiklanadi — tarix
+yo'qolmaydi va yangi kanal ulash bonusi takror berilmaydi.
+
 **C. Homiy kanallar.** `sponsorGate()` har chaqiriqda `sponsorMemberships` ga
 `MEMBER / NOT_MEMBER / CHECK_ERROR` yozadi. Bu yozuvlar `memberships` bilan
 aralashtirilmaydi va 24 soatlik navbatga tushmaydi.
@@ -125,7 +132,7 @@ a'zolik tekshiruvini ishga tushirmaydi.
 ## 7. Test natijalari
 
 `node data/membership-test.mjs` — mahalliy mock Telegram (`data/mock-tg2.mjs`)
-bilan, 23/23 PASS:
+bilan, 25/25 PASS:
 
 | # | Tekshiruv | Natija |
 |---|---|---|
@@ -152,6 +159,8 @@ bilan, 23/23 PASS:
 | 21 | Soatlik hisobot davri yoziladi, takrorlanmaydi | PASS |
 | 22 | Sponsor a'zoligi alohida jadvalda | PASS |
 | 23 | Sponsor yozuvi oddiy a'zolik bilan aralashmaydi | PASS |
+| 24 | Kanal uzildi — yozuv va snapshot tarix uchun saqlanadi | PASS |
+| 25 | Uzilgandan keyin monitoring to'xtaydi, a'zolik tarixi qoladi | PASS |
 
 Qo'shimcha: `node data/recon.mjs` productionda `Σ tranzaksiya = available`
 mosligini tekshiradi.
