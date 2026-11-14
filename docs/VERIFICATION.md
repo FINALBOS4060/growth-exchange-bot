@@ -48,7 +48,13 @@ ko'chiriladi: hech qanday foydalanuvchi, buyurtma yoki tarix o'chirilmaydi.
   berilmaydi** (spec §3-B).
 
 Voqea turlari: `FIRST_VERIFIED`, `RECHECK_ACTIVE`, `UNSUBSCRIBED`, `REJOINED`,
-`CHECK_ERROR`. Instagram uchun `SELF_CONFIRMED` alohida saqlanadi va kredit
+`CHECK_ERROR`.
+
+**Jurnal hajmi siyosati:** holat o'zgarmagan muvaffaqiyatli 24 soatlik tekshiruv
+`membershipEvents` ga yozilmaydi — faqat `lastCheckedAt`, `lastHealthyCheckAt`,
+`healthyCheckCount` va `nextCheckAt` yangilanadi. `RECHECK_ACTIVE` faqat
+`CHECK_ERROR` dan keyin tiklanishda yoziladi. Shu tufayli 1000 foydalanuvchida
+ham jurnal yiliga yuz minglab yozuv bilan shishmaydi. Instagram uchun `SELF_CONFIRMED` alohida saqlanadi va kredit
 bermaydi (`creditRewardInstagramSelfConfirmed` standart 0).
 
 ## 3. Uch tekshiruv nuqtasi
@@ -132,7 +138,7 @@ a'zolik tekshiruvini ishga tushirmaydi.
 ## 7. Test natijalari
 
 `node data/membership-test.mjs` — mahalliy mock Telegram (`data/mock-tg2.mjs`)
-bilan, 25/25 PASS:
+bilan, 26/26 PASS:
 
 | # | Tekshiruv | Natija |
 |---|---|---|
@@ -161,6 +167,7 @@ bilan, 25/25 PASS:
 | 23 | Sponsor yozuvi oddiy a'zolik bilan aralashmaydi | PASS |
 | 24 | Kanal uzildi — yozuv va snapshot tarix uchun saqlanadi | PASS |
 | 25 | Uzilgandan keyin monitoring to'xtaydi, a'zolik tarixi qoladi | PASS |
+| 26 | Holat o'zgarmasa voqea yozilmaydi (jurnal shishmaydi) | PASS |
 
 Qo'shimcha: `node data/recon.mjs` productionda `Σ tranzaksiya = available`
 mosligini tekshiradi.

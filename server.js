@@ -2449,15 +2449,22 @@ async function runVerificationJob(job) {
   if (r === "member") {
     const oldStatus = m.status;
     const wasInactive = oldStatus !== "ACTIVE";
+    // Holat o'zgarmagan muvaffaqiyatli tekshiruv jurnalga yozilmaydi — faqat
+    // sanalar va hisoblagich yangilanadi (aks holda 1000 foydalanuvchida
+    // yiliga ~365k yozuv to'planadi).
+    const hadErrors = (m.consecutiveCheckErrors || 0) > 0;
     m.status = "ACTIVE";
     m.lastCheckResult = "member";
+    m.lastHealthyCheckAt = now;
     m.consecutiveCheckErrors = 0;
+    m.healthyCheckCount = (m.healthyCheckCount || 0) + 1;
     if (!m.firstVerifiedAt) m.firstVerifiedAt = now;
     if (wasInactive) {
       m.lastMembershipChangeAt = now;
       membershipEvent(job.userId, job.channelId, "REJOINED", oldStatus, "ACTIVE", "recheck", "member", "");
       markRejoined(job.userId, job.channelId);
-    } else {
+    } else if (hadErrors) {
+      // Xatodan keyin tiklanish — bu haqiqiy holat o'zgarishi, yoziladi.
       membershipEvent(job.userId, job.channelId, "RECHECK_ACTIVE", "ACTIVE", "ACTIVE", "recheck", "member", "");
     }
   } else {
