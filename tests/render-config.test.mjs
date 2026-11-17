@@ -31,6 +31,12 @@ check("/healthz matn rejimida javob beradi (Render probe)", /res\.end\("ok " \+ 
 check("admin health botlar holatini beradi (checker shundan o'qiydi)",
   /bots:\s*botsList\(\)\.map/.test(src) && /adminHealth\(base\)/.test(fs.readFileSync("scripts/post-deploy-check.mjs", "utf8")));
 
+/* 2b. Conflict tekshiruvi Render'ning AMALDAGI loglar endpoint'ini ishlatadi */
+const checker = fs.readFileSync("scripts/post-deploy-check.mjs", "utf8");
+check("conflict: /v1/logs?resource=<serviceId> ishlatiladi", /api\.render\.com\/v1\/logs\?resource=\$\{serviceId\}/.test(checker));
+check("conflict: 404 beradigan eski endpoint ishlatilmaydi", !/v1\/services\/\$\{serviceId\}\/logs/.test(checker));
+check("conflict: SIGTERM dan keyingi conflictlar alohida sanaladi", /conflictsAfterShutdown/.test(checker));
+
 /* 3. Instans soni va graceful shutdown */
 check("numInstances aniq ko'rsatilgan (1)", has(/numInstances:\s*1/));
 check("maxShutdownDelaySeconds (SIGTERM oynasi)", has(/maxShutdownDelaySeconds:\s*30/));

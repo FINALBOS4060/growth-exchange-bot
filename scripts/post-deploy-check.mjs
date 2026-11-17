@@ -122,7 +122,10 @@ async function renderConflictCount() {
     } catch {}
   }
   if (!apiKey || !serviceId) return { skipped: "RENDER_API_KEY / serviceId topilmadi" };
-  const url = `https://api.render.com/v1/services/${serviceId}/logs?limit=200${ownerId ? `&ownerId=${ownerId}` : ""}`;
+  // Render loglar endpoint'i: `/v1/logs?resource=<serviceId>` (eski
+  // `/v1/services/<id>/logs` 404 qaytaradi va tekshiruv jimgina o'tkazib
+  // yuborilardi — conflict hech qachon haqiqatda sanalmagan).
+  const url = `https://api.render.com/v1/logs?resource=${serviceId}&limit=200${ownerId ? `&ownerId=${ownerId}` : ""}`;
   let res;
   try {
     res = await fetch(url, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } });
@@ -133,10 +136,33 @@ async function renderConflictCount() {
   }
   if (!res.ok) return { skipped: `Render logs ${res.status}` };
   const data = await res.json().catch(() => ({}));
-  const lines = (data.logs || data).map((l) => `${l.timestamp || ""} ${l.message || ""}`);
+  const instOf = (l) => {
+    const lab = (l.labels || []).find((x) => x.name === "instance");
+    return lab ? String(lab.value).split("-").pop() : "?";
+  };
+  const rows = (data.logs || []).map((l) => ({
+    t: l.timestamp || "",
+    inst: instOf(l),
+    msg: String(l.message || "")
+  }));
+  const lines = rows.map((r) => `${r.t} ${r.msg}`);
   const conflicts = lines.filter((l) => /Conflict: terminated by other getUpdates/i.test(l));
   const starts = lines.filter((l) => /ishga tushdi|Bot @/i.test(l));
-  return { total: lines.length, conflicts: conflicts.length, lastConflict: conflicts.slice(-1)[0] || "", restartsSeen: starts.length };
+  // Deploy almashinuvi paytida eski instans SIGTERM oladi. Undan KEYINGI
+  // conflictlar haqiqiy dublikat pollingni bildiradi.
+  const sig = rows.filter((r) => /SIGTERM/.test(r.msg)).map((r) => r.t).sort();
+  const lastSig = sig.length ? sig[sig.length - 1] : "";
+  const afterSig = lastSig ? rows.filter((r) => r.t > lastSig) : rows;
+  const conflictsAfter = afterSig.filter((r) => /Conflict: terminated by other getUpdates/i.test(r.msg));
+  const instances = [...new Set(rows.filter((r) => r.inst !== "?").map((r) => r.inst))];
+  return {
+    total: lines.length,
+    conflicts: conflicts.length,
+    conflictsAfterShutdown: conflictsAfter.length,
+    instanceCount: instances.length,
+    lastConflict: conflicts.slice(-1)[0] || "",
+    restartsSeen: starts.length
+  };
 }
 
 // Baseline va post-deploy AYNAN bir xil qoidalar bilan sanaydi.
@@ -177,6 +203,15 @@ async function main() {
   }
 
   console.log(`Ombor: ${storage}${loaded.updatedAt ? `  (oxirgi saqlash: ${loaded.updatedAt})` : ""}`);
+  // Muhim: `--url` bilan masofaviy servis tekshirilganda holat lokal fayldan
+  // o'qilsa, 1/4–7 bo'limlar PRODUCTION emas, lokal ma'lumotni ko'rsatadi.
+  // Buni jimgina qoldirmaslik kerak — hisobot noto'g'ri o'qiladi.
+  if (!pool && HEALTH_URL) {
+    console.log(
+      `DIQQAT: 1, 4–7 bo'limlar LOKAL fayldan (${path.basename(DATA_FILE)}) — production emas.` +
+        " Production holati uchun DATABASE_URL bering (checker faqat o'qiydi)."
+    );
+  }
   line("1. Holat snapshot'i");
   for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`);
 
@@ -242,8 +277,11 @@ async function main() {
   else {
     console.log(`  oxirgi ${c.total} log satrida "Conflict: terminated by other getUpdates": ${c.conflicts}`);
     if (c.lastConflict) console.log(`  oxirgisi: ${c.lastConflict}`);
-    console.log(`  ${ok(c.conflicts === 0)} ${c.conflicts === 0 ? "conflict yo'q" : "conflict bor — qulf ishlamayapti"}`);
-    if (c.conflicts > 0) fail(`Conflict yozuvlari: ${c.conflicts}`);
+    console.log(`  oxirgi SIGTERM dan keyin: ${c.conflictsAfterShutdown}` +
+      (c.conflicts > 0 ? "  (deploy almashinuvi paytida eski instans hali polling qilgan bo'lishi mumkin)" : ""));
+    console.log(`  log oynasidagi instanslar: ${c.instanceCount}`);
+    console.log(`  ${ok(c.conflictsAfterShutdown === 0)} ${c.conflictsAfterShutdown === 0 ? "qulfdan keyin conflict yo'q" : "SIGTERM dan keyin ham conflict — qulf ishlamayapti"}`);
+    if (c.conflictsAfterShutdown > 0) fail(`SIGTERM dan keyingi Conflict yozuvlari: ${c.conflictsAfterShutdown}`);
   }
 
   line("4. RECHECK / CHECK_ERROR vazifalar va TASK_CHECK joblari");
