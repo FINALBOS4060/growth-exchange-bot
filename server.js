@@ -32,9 +32,11 @@ function processTaskBatchVerification(batchTasks, verificationLookup) {
         ...task,
         status: "CHECK_ERROR"
       });
+      // Vaqtinchalik xato: FIFO'ga EMAS, CHECK_ERROR holatida qoladi. Uni
+      // faqat doimiy TASK_CHECK jobi qayta tekshiradi (spec §2).
       deferredTasks.push({
         ...task,
-        status: "RECHECK"
+        status: "CHECK_ERROR"
       });
     } else {
       deferredTasks.push({
@@ -134,6 +136,7 @@ var defaultSettings = () => ({
   // Instagram'ni rasmiy tekshirib bo'lmaydi (o'zi tasdiqlaydi). Shuning uchun
   // unga sarflanadigan kredit berilmaydi — admin xohlasa shu qiymatni oshiradi.
   creditRewardInstagramSelfConfirmed: 0,
+  // Malakali referal mukofoti — bitta umumiy hamyonga kredit sifatida (bir marta).
   creditRewardReferral: 300,
   // 1 obunachi narxi (buyurtmada). 1 kredit = 1 obunachi.
   creditPerSubscriber: 1,
@@ -194,6 +197,11 @@ var db = {
   notifPeriods: [],
   ctlRequests: [],
   verifyLog: [],
+  // Tekshiruv nosozliklari jurnali: har bir muvaffaqiyatsiz getChatMember
+  // so'rovi to'liq diagnostika bilan yoziladi (chat, user, kod, tavsif, HTTP
+  // holati, retry_after). Ilgari xato "Telegram API xatosi" degan umumiy matn
+  // bilan almashtirilardi va haqiqiy sabab butunlay yo'qolardi.
+  verifyErrors: [],
   adminUsers: [],
   auditLog: [],
   appeals: [],
@@ -206,6 +214,7 @@ var db = {
 function applyLoadedState(loaded) {
   if (!loaded || typeof loaded !== "object") return false;
   db = { ...db, ...loaded, settings: { ...defaultSettings(), ...loaded.settings || {} } };
+  if (!Array.isArray(db.verifyErrors)) db.verifyErrors = [];
   return true;
 }
 function loadFile() {
@@ -229,16 +238,65 @@ function pgConfig(url) {
   if (!isLocal && u.searchParams.get("sslmode") !== "disable") cfg.ssl = { rejectUnauthorized: false };
   return cfg;
 }
-function persist() {
-  if (!dbPool) return Promise.resolve();
+// Oxirgi o'qilgan/yozilgan holat (uch tomonlama merge uchun ASOS) va `rev`.
+// `rev` — `app_state` qatorining versiyasi: har muvaffaqiyatli yozuvda +1.
+var LAST_STATE = "";
+var STATE_REV = 0;
+// `persist()` natijani HAQIQIY qaytaradi: xato yutilmaydi. Zanjir (dbChain)
+// hech qachon rad etilmaydi — bitta xato keyingi yozuvlarni bloklamaydi, lekin
+// chaqiruvchi `false` oladi va pul amalini qaytarish imkoniga ega bo'ladi.
+//
+// KO'P INSTANS: yozuv `rev` bo'yicha CAS bilan bajariladi —
+// `WHERE id = 1 AND rev = <o'qilgan rev>`. Eski xotira nusxasi yangi
+// ma'lumotni JIMGINA bosib ketolmaydi: 0 qator qaytadi va natija `false`.
+function persistNow() {
+  if (!dbPool) return Promise.resolve(true);
   const payload = JSON.stringify(db);
-  dbChain = dbChain.then(() => dbPool.query(
-    "INSERT INTO app_state (id, data, updated_at) VALUES (1, $1::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-    [payload]
-  )).catch((e) => {
-    console.error("Postgres saqlash xatosi:", e.message);
+  const expect = STATE_REV;
+  const p = dbChain.then(() => dbPool.query(
+    "UPDATE app_state SET data = $1::jsonb, rev = rev + 1, updated_at = now() WHERE id = 1 AND rev = $2 RETURNING rev",
+    [payload, expect]
+  ));
+  dbChain = p.then(() => {}, () => {});
+  return p.then((r) => {
+    if (!r.rows || !r.rows.length) {
+      console.error(`Postgres CAS konflikti: rev ${expect} eskirgan — yozuv rad etildi (holat qulfi ostida qayta o'qish kerak)`);
+      return false;
+    }
+    STATE_REV = Number(r.rows[0].rev) || expect + 1;
+    LAST_STATE = payload;
+    return true;
+  }, (e) => {
+    console.error("Postgres saqlash xatosi:", e && e.message || e);
+    return false;
   });
-  return dbChain;
+}
+// Qulflar ASYNC KONTEKST bo'yicha qayta kirishga ruxsat beradi: bir xil
+// so'rov ichida `withStateTx` → `flushOrRollback` → `withSaveLock` zanjiri
+// o'zini bloklab qo'ymasligi kerak, boshqa so'rov esa kutishi shart.
+var LOCK_CTX = new AsyncLocalStorage();
+// Pul yozuvlari va ularning rollback'i KETMA-KET bajariladi: aks holda xato
+// bo'lgan operatsiya hali xotirada qaytarilmaganda boshqa yozuv shu holatni
+// bazaga ko'chirib qo'yardi. `flushSaveAwaited()` faqat shu qulf ICHIDA
+// chaqiriladi (u `persistNow()` ishlatadi — qayta qulf olish yo'q).
+var SAVE_LOCK = Promise.resolve();
+async function withSaveLock(fn) {
+  const st = LOCK_CTX.getStore();
+  if (st && st.save) return fn();
+  const prev = SAVE_LOCK;
+  let release;
+  SAVE_LOCK = new Promise((r) => {
+    release = r;
+  });
+  await prev;
+  try {
+    return await LOCK_CTX.run({ save: true, state: false }, fn);
+  } finally {
+    release();
+  }
+}
+function persist() {
+  return withStateTx(async () => persistNow()).then((r) => (r && r.ok ? !!r.value : false));
 }
 // --- Kunlik zaxira nusxa (spec §18, §19) ---
 async function backupNow(reason) {
@@ -309,13 +367,32 @@ async function openStore() {
       dbPool = new pg.Pool(pgConfig(DATABASE_URL));
       dbPool.on("error", (e) => console.error("Postgres pool xatosi:", e.message));
       await dbPool.query("CREATE TABLE IF NOT EXISTS app_state (id integer PRIMARY KEY, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())");
-      const r = await dbPool.query("SELECT data FROM app_state WHERE id = 1");
+      // `rev` — instanslararo yozuv navbati. `ADD COLUMN IF NOT EXISTS` mavjud
+      // jadvalni buzmaydi va ma'lumotni qayta yozmaydi (destruktiv migratsiya yo'q).
+      await dbPool.query("ALTER TABLE app_state ADD COLUMN IF NOT EXISTS rev bigint NOT NULL DEFAULT 0");
+      const r = await dbPool.query("SELECT data, rev FROM app_state WHERE id = 1");
       if (r.rows.length) {
         applyLoadedState(r.rows[0].data);
-        console.log("Saqlash: Postgres (mavjud holat yuklandi)");
+        STATE_REV = Number(r.rows[0].rev) || 0;
+        LAST_STATE = JSON.stringify(db);
+        console.log("Saqlash: Postgres (mavjud holat yuklandi, rev=" + STATE_REV + ")");
       } else {
         loadFile();
-        await persist();
+        // Qator yo'q — yaratamiz. Ikki instans bir vaqtda ko'tarilsa
+        // `ON CONFLICT DO NOTHING`: ikkinchisi birinchisining holatini o'qiydi.
+        const ins = await dbPool.query(
+          "INSERT INTO app_state (id, data, rev) VALUES (1, $1::jsonb, 0) ON CONFLICT (id) DO NOTHING RETURNING rev",
+          [JSON.stringify(db)]
+        );
+        if (ins.rows.length) {
+          STATE_REV = 0;
+          LAST_STATE = JSON.stringify(db);
+        } else {
+          const r2 = await dbPool.query("SELECT data, rev FROM app_state WHERE id = 1");
+          if (r2.rows.length) applyLoadedState(r2.rows[0].data);
+          STATE_REV = r2.rows.length ? Number(r2.rows[0].rev) || 0 : 0;
+          LAST_STATE = JSON.stringify(db);
+        }
         console.log("Saqlash: Postgres (yangi jadval, boshlang'ich holat yozildi)");
       }
       STORAGE = "postgres";
@@ -336,15 +413,172 @@ async function openStore() {
   console.error("DIQQAT: Postgres ishlamadi - vaqtincha fayl rejimi. Render'da bu ma'lumotlar restartda yo'qoladi!");
   loadFile();
 }
+// ===== Instans qulfi (bir token → bitta polling jarayoni) =====
+// Productionda 26 soat ichida 16 marta qayta ishga tushish bo'lgan. Har safar
+// yangi instans eski instansning long-poll so'rovi tugashini kutmasdan
+// getUpdates boshlagan → Telegram "Conflict: terminated by other getUpdates
+// request" qaytargan. Endi polling huquqi bazadagi qulf bilan beriladi:
+// Postgres'da `pg_try_advisory_lock` (ulanish uzilsa avtomatik bo'shaydi),
+// fayl rejimida esa heartbeat bilan yangilanadigan lock fayli.
+var LOCK_HELD = /* @__PURE__ */ new Set();
+var LOCK_CONN = null;
+var LOCK_CONN_BUSY = false;
+var INSTANCE_ID = `${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
+// Token → barqaror qulf kaliti. Bir xil token har doim bir xil kalitga,
+// turli tokenlar esa mustaqil kalitlarga tushadi (sha1 = determinist, 40 hex).
+function pollLockKey(token) {
+  return "poll:" + crypto.createHash("sha1").update(String(token || "")).digest("hex");
+}
+function lockFile(key) {
+  const h = crypto.createHash("sha1").update(String(key)).digest("hex").slice(0, 12);
+  return path.join(path.dirname(DATA_FILE), `.lock-${h}.json`);
+}
+// Qulf saqlash qatlamiga MOS bo'lishi shart: Postgres ishlamay fayl rejimiga
+// tushib qolgan bo'lsa, advisory lock hech qachon olinmaydi va bot umuman
+// polling qilmay qolardi.
+function lockViaPg() {
+  return STORAGE === "postgres" && !!DATABASE_URL;
+}
+async function lockClient() {
+  if (!lockViaPg()) return null;
+  if (LOCK_CONN) return LOCK_CONN;
+  if (LOCK_CONN_BUSY) return null;
+  LOCK_CONN_BUSY = true;
+  try {
+    const pgMod = await import("pg");
+    const pg = pgMod.default || pgMod;
+    const c = new pg.Client(pgConfig(DATABASE_URL));
+    await c.connect();
+    c.on("error", (e) => {
+      console.error("Qulf ulanishi uzildi:", e.message);
+      LOCK_CONN = null;
+      LOCK_HELD.clear();
+      onLockLost();
+    });
+    LOCK_CONN = c;
+    return c;
+  } catch (e) {
+    console.error("Qulf ulanishi ochilmadi:", e.message);
+    return null;
+  } finally {
+    LOCK_CONN_BUSY = false;
+  }
+}
+async function tryLock(key) {
+  if (!lockViaPg()) {
+    const f = lockFile(key);
+    try {
+      const cur = JSON.parse(fs.readFileSync(f, "utf8"));
+      const mine = cur && cur.id === INSTANCE_ID;
+      const fresh = cur && Date.now() - (cur.at || 0) < 6e4;
+      if (!mine && fresh) {
+        // Jarayon tirikmi? O'lgan bo'lsa qulf darhol bo'sh hisoblanadi
+        // (crashdan keyin 60 soniya kutmaymiz).
+        let alive = cur.pid === process.pid;
+        if (!alive && cur.pid) {
+          try {
+            process.kill(cur.pid, 0);
+            alive = true;
+          } catch (e) {
+            alive = !!e && e.code === "EPERM";
+          }
+        }
+        if (alive) return false;
+      }
+    } catch {}
+    try {
+      fs.writeFileSync(f, JSON.stringify({ id: INSTANCE_ID, pid: process.pid, at: Date.now(), key }));
+      LOCK_HELD.add(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const c = await lockClient();
+  if (!c) return false;
+  try {
+    // hashtextextended — 64-bitli kalit (hashtext 32-bitli, to'qnashuv ehtimoli
+    // yuqoriroq edi). Seed 0: kalit barqaror va determinist.
+    const r = await c.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", ["gxb:" + key]);
+    if (r.rows[0] && r.rows[0].ok) {
+      LOCK_HELD.add(key);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error("Qulf olishda xato:", e.message);
+    LOCK_CONN = null;
+    LOCK_HELD.clear();
+    return false;
+  }
+}
+async function releaseLock(key) {
+  if (!LOCK_HELD.has(key)) return;
+  LOCK_HELD.delete(key);
+  if (!lockViaPg()) {
+    try {
+      fs.unlinkSync(lockFile(key));
+    } catch {}
+    return;
+  }
+  const c = LOCK_CONN;
+  if (!c) return;
+  try {
+    await c.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", ["gxb:" + key]);
+  } catch {}
+}
+async function releaseAllLocks() {
+  for (const k of [...LOCK_HELD]) await releaseLock(k);
+  if (LOCK_CONN) {
+    try {
+      await LOCK_CONN.end();
+    } catch {}
+    LOCK_CONN = null;
+  }
+}
+// Qulf ulanishi uzilsa Postgres qulfni bo'shatadi — boshqa instans polling
+// boshlashi mumkin. Shuning uchun biz DARHOL pollingni to'xtatamiz, aks holda
+// ikkita jarayon bir tokenni tortib oladi.
+function onLockLost() {
+  if (shuttingDown) return;
+  if (!botRuns || !botRuns.size) return;
+  console.error("Qulf yo'qoldi — polling to'xtatiladi (boshqa instans davom etadi)");
+  for (const id of [...botRuns.keys()]) stopBotLoop(id);
+}
+function startLockHeartbeat(sec = 25) {
+  setInterval(async () => {
+    if (!lockViaPg()) {
+      for (const k of LOCK_HELD) {
+        try {
+          fs.writeFileSync(lockFile(k), JSON.stringify({ id: INSTANCE_ID, pid: process.pid, at: Date.now(), key: k }));
+        } catch {}
+      }
+      return;
+    }
+    if (!LOCK_CONN) return;
+    try {
+      await LOCK_CONN.query("SELECT 1");
+    } catch (e) {
+      console.error("Qulf heartbeat xatosi:", e.message);
+      LOCK_CONN = null;
+      LOCK_HELD.clear();
+      onLockLost();
+    }
+  }, Math.max(5, sec) * 1e3);
+}
+// `saveNow()` endi muvaffaqiyatni qaytaradi: pul amalidan keyin foydalanuvchiga
+// "bajarildi" deb faqat yozuv HAQIQATAN diskda bo'lsa aytiladi.
 function saveNow() {
-  if (dbPool) return;
+  if (dbPool) return true;
   try {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     const tmp = DATA_FILE + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(db));
     fs.renameSync(tmp, DATA_FILE);
+    return true;
   } catch (e) {
     console.error("Faylga saqlash xatosi", e);
+    return false;
   }
 }
 function save() {
@@ -362,8 +596,402 @@ function flushSave() {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  saveNow();
+  const ok = saveNow();
   persist();
+  return ok;
+}
+// Pul amallari uchun ANIQ saqlash: Postgres rejimida yozuv haqiqatan
+// bajarilganini KUTADI. `flushSave()` fayl rejimida sinxron va aniq, lekin
+// Postgres'da yozuvni kutmasdan `true` qaytarardi — shu sababli
+// `flushOrRollback()` PG'da hech qachon qaytarmasdi.
+async function flushSaveAwaited() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!dbPool) return saveNow();
+  // Yozuv holat tranzaksiyasi orqali: qulf ostida eng so'nggi holat bilan
+  // birlashtiriladi, keyin `rev` bo'yicha CAS bilan yoziladi. Tranzaksiya
+  // ichidan chaqirilganda qayta qulf olinmaydi (reentrant).
+  const r = await withStateTx(() => persistNow());
+  return r.ok ? !!r.value : false;
+}
+// Pul maydonlari snapshot'i: `flushSave()` yiqilsa o'zgarishni qaytarish uchun.
+function creditsSnapshot(u) {
+  return { credits: { ...u.credits }, txLen: db.transactions.length, op: CURRENT_OP };
+}
+function creditsRestore(u, snap) {
+  if (!snap) return;
+  Object.assign(u.credits, snap.credits);
+  // Faqat shu operatsiya yozgan tranzaksiyalar olib tashlanadi.
+  db.transactions = dropOpRows(db.transactions, snap, snap.txLen);
+}
+// Chuqur nusxa va joyida tiklash: obyekt REFERENSI uzilmaydi, shuning uchun
+// bir vaqtda ishlayotgan boshqa handler'larning yozuvlari yo'qolmaydi.
+function deepCopy(o) {
+  return o == null ? o : JSON.parse(JSON.stringify(o));
+}
+function restoreInto(target, src) {
+  if (!target || !src) return;
+  for (const k of Object.keys(target)) if (!(k in src)) delete target[k];
+  for (const k of Object.keys(src)) {
+    const v = src[k];
+    const cur = target[k];
+    // Ichma-ich obyektlar ham JOYIDA yangilanadi: ishlab turgan handler
+    // ushlab turgan `u.credits` kabi havolalar uzilib qolmaydi.
+    if (v && cur && typeof v === "object" && typeof cur === "object" && !Array.isArray(v) && !Array.isArray(cur)) {
+      restoreInto(cur, v);
+    } else target[k] = v;
+  }
+}
+// Operatsiya identifikatori: rollback faqat SHU operatsiya yaratgan yozuvlarni
+// olib tashlaydi. Ilgari massivlar uzunlik bo'yicha qisqartirilardi — persist
+// kutish paytida boshqa handler yozgan yozuv ham o'chib ketardi.
+var CURRENT_OP = "";
+var OP_SEQ = 0;
+function newOpId(prefix) {
+  return `${prefix || "op"}:${Date.now().toString(36)}${(++OP_SEQ).toString(36)}`;
+}
+// Sinxron mutatsiya blokini belgilaydi; `await` dan OLDIN `end()` chaqiriladi.
+function opSet(id) {
+  const prev = CURRENT_OP;
+  CURRENT_OP = id;
+  return () => {
+    CURRENT_OP = prev;
+  };
+}
+function opStart(prefix) {
+  return opSet(newOpId(prefix));
+}
+// Snapshot `op` ni saqlaydi; rollback faqat o'sha operatsiya yozuvlarini oladi.
+function dropOpRows(arr, snap, fallbackLen) {
+  if (!Array.isArray(arr)) return [];
+  if (!snap || !snap.op) return arr.length > (fallbackLen || 0) ? arr.slice(0, fallbackLen || 0) : arr;
+  return arr.filter((x) => !(x && x.opId === snap.op));
+}
+/* ===========================================================================
+ * INSTANSLARARO HOLAT TRANZAKSIYASI (`app_state`)
+ *
+ * Muammo: har bir Node.js jarayoni butun holatni xotirada ushlab, butun JSON
+ * hujjatni bitta qatorga yozadi. Ikki instans bir vaqtda pul yozsa, keyingi
+ * yozuv oldingisini bosib ketardi (lost update) — balans va jurnal ajralardi.
+ *
+ * Yechim (qatlamlar):
+ *  1. PostgreSQL advisory lock (`gxb:state`) — butun o'qish → tekshirish →
+ *     mutatsiya → yozish zanjiri shu qulf ostida. Qulf alohida ulanishda
+ *     turadi; ulanish uzilsa Postgres uni bo'shatadi.
+ *  2. Qulf ostida holat BAZADAN qayta o'qiladi (`syncDown`) va xotiraga
+ *     JOYIDA ko'chiriladi (`liveSync`) — handler ushlab turgan obyektlar
+ *     yangi qiymatlarni ko'radi, ya'ni tekshiruvlar eng so'nggi holat bo'yicha
+ *     bajariladi (eski snapshot bilan qaror qabul qilinmaydi).
+ *  3. Yozuv `rev` bo'yicha CAS bilan — qulfdan tashqarida qolgan eski nusxa
+ *     hech qachon yangi ma'lumotni jimgina bosib ketolmaydi.
+ *  4. Qulf olinmasa yoki holatni o'qib bo'lmasa, pul amali BAJARILMAYDI va
+ *     `save_failed` qaytadi — foydalanuvchiga yolg'on muvaffaqiyat xabari yo'q.
+ *
+ * Fayl rejimi (lokal, `DATABASE_URL` yo'q) — bitta jarayon, qulf kerak emas.
+ * ========================================================================= */
+var STATE_CONN = null;
+var STATE_CONN_BUSY = false;
+var STATE_LOCK_KEY = "gxb:state";
+var STATE_LOCK_TIMEOUT_MS = 20000;
+
+async function stateClient() {
+  if (!lockViaPg()) return null;
+  if (STATE_CONN) return STATE_CONN;
+  if (STATE_CONN_BUSY) return null;
+  STATE_CONN_BUSY = true;
+  try {
+    const pgMod = await import("pg");
+    const pg = pgMod.default || pgMod;
+    const c = new pg.Client(pgConfig(DATABASE_URL));
+    await c.connect();
+    // Ulanish uzilsa Postgres qulfni o'zi bo'shatadi; biz esa buni xato deb
+    // hisoblaymiz — tranzaksiya `lock_lost` bilan yakunlanadi va rollback bo'ladi.
+    c.on("error", (e) => {
+      console.error("Holat qulfi ulanishi uzildi:", e && e.message || e);
+      STATE_CONN = null;
+    });
+    STATE_CONN = c;
+    return c;
+  } catch (e) {
+    console.error("Holat qulfi ulanishi ochilmadi:", e && e.message || e);
+    return null;
+  } finally {
+    STATE_CONN_BUSY = false;
+  }
+}
+async function acquireStateLock(timeoutMs) {
+  if (!lockViaPg()) return { ok: true, client: null };
+  const c = await stateClient();
+  if (!c) return { ok: false, reason: "no_conn" };
+  const deadline = Date.now() + (Number(timeoutMs) || STATE_LOCK_TIMEOUT_MS);
+  for (;;) {
+    let r;
+    try {
+      // hashtextextended — 64-bitli, determinist kalit (polling qulfi bilan
+      // bir xil uslub); kalit `gxb:state` prefiksi bilan polling kalitlaridan
+      // ajralgan, shuning uchun ular bir-birini bloklamaydi.
+      r = await c.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", [STATE_LOCK_KEY]);
+    } catch (e) {
+      console.error("Holat qulfini olishda xato:", e && e.message || e);
+      return { ok: false, reason: "lock_error" };
+    }
+    if (r.rows[0] && r.rows[0].ok) return { ok: true, client: c };
+    if (Date.now() >= deadline) return { ok: false, reason: "lock_timeout" };
+    await new Promise((res) => setTimeout(res, 40 + Math.floor(Math.random() * 60)));
+  }
+}
+async function releaseStateLock(c) {
+  if (!c) return;
+  try {
+    await c.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [STATE_LOCK_KEY]);
+  } catch {}
+}
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function idOf(o) {
+  if (!o || typeof o !== "object") return "";
+  return o.id || o.telegramId || o.key || "";
+}
+// Bitta yozuv (obyekt) uchun uch tomonlama merge. `base` — oxirgi kelishilgan
+// holat, `ours` — bizning xotiramiz, `theirs` — bazadagi yangi holat.
+function mergeRecord(base, ours, theirs) {
+  if (!ours || !theirs) return ours;
+  if (sameJson(ours, base)) return theirs;
+  if (sameJson(theirs, base)) return ours;
+  if (typeof ours !== "object" || typeof theirs !== "object") return ours;
+  if (Array.isArray(ours) || Array.isArray(theirs)) return ours;
+  return mergeTop(base && typeof base === "object" ? base : {}, ours, theirs);
+}
+// `id` li massivlar (orders, tasks, transactions, ...) — kalit bo'yicha merge.
+function mergeList(base, ours, theirs) {
+  if (!Array.isArray(ours) || !Array.isArray(theirs)) return ours;
+  const keyed = (arr) => arr.every((x) => x && typeof x === "object" && idOf(x));
+  if (!keyed(ours) || !keyed(theirs)) return ours;
+  const bi = new Map((Array.isArray(base) ? base : []).map((x) => [idOf(x), x]));
+  const oi = new Map(ours.map((x) => [idOf(x), x]));
+  const ti = new Map(theirs.map((x) => [idOf(x), x]));
+  const out = [];
+  for (const t of theirs) {
+    const id = idOf(t);
+    const b = bi.get(id);
+    const o = oi.get(id);
+    if (!o) {
+      // Bizda yo'q: agar avval ham yo'q bo'lsa — o'sha instans qo'shgan.
+      if (!b) out.push(t);
+      continue;
+    }
+    out.push(mergeRecord(b, o, t));
+  }
+  for (const o of ours) {
+    const id = idOf(o);
+    if (!ti.has(id) && !bi.has(id)) out.push(o); // biz qo'shgan yangi yozuv
+  }
+  return out;
+}
+// Butun holat uchun uch tomonlama merge (kalit → yozuv darajasida).
+function mergeTop(base, ours, theirs) {
+  const b = base && typeof base === "object" ? base : {};
+  const o = ours && typeof ours === "object" ? ours : {};
+  const t = theirs && typeof theirs === "object" ? theirs : {};
+  const out = {};
+  for (const k of new Set([...Object.keys(t), ...Object.keys(o)])) {
+    const bv = b[k];
+    const ov = o[k];
+    const tv = t[k];
+    if (!(k in o)) {
+      out[k] = tv;
+      continue;
+    }
+    if (!(k in t)) {
+      if (!sameJson(ov, bv)) out[k] = ov; // biz qo'shgan/o'zgartirgan — saqlanadi
+      continue;
+    }
+    if (sameJson(ov, bv)) {
+      out[k] = tv;
+      continue;
+    }
+    if (sameJson(tv, bv)) {
+      out[k] = ov;
+      continue;
+    }
+    if (Array.isArray(ov) && Array.isArray(tv)) {
+      out[k] = mergeList(bv, ov, tv);
+      continue;
+    }
+    if (ov && tv && typeof ov === "object" && typeof tv === "object") {
+      const rec = {};
+      const bb = bv && typeof bv === "object" ? bv : {};
+      for (const kk of new Set([...Object.keys(tv), ...Object.keys(ov)])) {
+        if (!(kk in ov)) {
+          rec[kk] = tv[kk];
+          continue;
+        }
+        if (!(kk in tv)) {
+          if (!sameJson(ov[kk], bb[kk])) rec[kk] = ov[kk];
+          continue;
+        }
+        rec[kk] = mergeRecord(bb[kk], ov[kk], tv[kk]);
+      }
+      out[k] = rec;
+      continue;
+    }
+    // Skalyar: oxirgi yozuvchi yutadi. `seq` faqat o'sadi.
+    out[k] = k === "seq" && typeof ov === "number" && typeof tv === "number" ? Math.max(ov, tv) : ov;
+  }
+  return out;
+}
+// Bazadagi holatni xotiraga JOYIDA ko'chiradi. `db`, `db.users[id]` va massiv
+// elementlarining IDENTIFIKLIGI saqlanadi — ishlab turgan handler'lar ushlab
+// turgan havolalar (`u`, `t`, `o`) yangi qiymatlarni ko'radi.
+function liveSync(fresh) {
+  if (!fresh || typeof fresh !== "object") return false;
+  const cur = db || {};
+  const keep = new Set(Object.keys(fresh));
+  for (const k of Object.keys(cur)) if (!keep.has(k)) delete cur[k];
+  for (const k of keep) {
+    const fv = fresh[k];
+    const cv = cur[k];
+    if (Array.isArray(fv)) {
+      if (!Array.isArray(cv)) {
+        cur[k] = fv;
+        continue;
+      }
+      const map = new Map();
+      for (const x of cv) if (x && typeof x === "object") {
+        const id = idOf(x);
+        if (id) map.set(id, x);
+      }
+      const out = [];
+      for (const x of fv) {
+        const id = x && typeof x === "object" ? idOf(x) : "";
+        const hit = id ? map.get(id) : null;
+        if (hit && x && typeof x === "object" && typeof hit === "object") {
+          restoreInto(hit, x);
+          out.push(hit);
+        } else out.push(x);
+      }
+      cur[k] = out;
+      continue;
+    }
+    if (fv && typeof fv === "object") {
+      if (!cv || typeof cv !== "object" || Array.isArray(cv)) {
+        cur[k] = fv;
+        continue;
+      }
+      const keep2 = new Set(Object.keys(fv));
+      for (const kk of Object.keys(cv)) if (!keep2.has(kk)) delete cv[kk];
+      for (const kk of Object.keys(fv)) {
+        const x = fv[kk];
+        const y = cv[kk];
+        if (x && y && typeof x === "object" && typeof y === "object" && !Array.isArray(x) && !Array.isArray(y)) restoreInto(y, x);
+        else cv[kk] = x;
+      }
+      continue;
+    }
+    cur[k] = fv;
+  }
+  LAST_STATE = JSON.stringify(db);
+  return true;
+}
+// Qulf ostida: bazadagi eng so'nggi holatni o'qib, xotira bilan BIRLASHTIRIB
+// qo'llaymiz. Mahalliy saqlanmagan o'zgarishlar yo'qolmaydi (ular `ours`),
+// boshqa instansning yozuvlari ham yo'qolmaydi (ular `theirs`).
+async function syncDown() {
+  if (!dbPool) return { ok: true };
+  let row;
+  try {
+    const r = await dbPool.query("SELECT data, rev FROM app_state WHERE id = 1");
+    if (!r.rows.length) return { ok: false, reason: "no_row" };
+    row = r.rows[0];
+  } catch (e) {
+    console.error("Holatni qayta o'qish xatosi:", e && e.message || e);
+    return { ok: false, reason: "read_error" };
+  }
+  const rev = Number(row.rev) || 0;
+  if (!LAST_STATE) {
+    liveSync(row.data);
+    STATE_REV = rev;
+    return { ok: true };
+  }
+  if (rev === STATE_REV) return { ok: true }; // boshqa instans yozmagan
+  let base = {};
+  try {
+    base = JSON.parse(LAST_STATE);
+  } catch {}
+  let ours = {};
+  try {
+    ours = JSON.parse(JSON.stringify(db));
+  } catch {}
+  const merged = mergeTop(base, ours, row.data);
+  liveSync(merged);
+  STATE_REV = rev;
+  return { ok: true };
+}
+// INSTANSLARARO KRITIK BO'LIM: qulf → eng so'nggi holat → `fn()` → qulfni
+// bo'shatish. Qaytaradi: `{ ok: true, value }` yoki `{ ok: false, reason }`.
+// `ok: false` — pul amali BAJARILMAGAN deb hisoblanishi shart (`save_failed`).
+async function withStateTx(fn) {
+  const st = LOCK_CTX.getStore();
+  // Allaqachon shu tranzaksiya ichidamiz — qulf qayta olinmaydi, lekin natija
+  // HAM bir xil konvertda qaytadi (`{ok,value}`), aks holda chaqiruvchi
+  // muvaffaqiyatli yozuvni xato deb o'ylardi.
+  if (st && st.state) return { ok: true, value: await fn() };
+  const run = async () => {
+    const store = LOCK_CTX.getStore();
+    const acq = await acquireStateLock();
+    if (!acq.ok) {
+      console.error(`Holat qulfi olinmadi (${acq.reason}) — amal bajarilmadi`);
+      return { ok: false, reason: acq.reason };
+    }
+    if (store) store.state = true;
+    try {
+      const sync = await syncDown();
+      if (!sync.ok) return { ok: false, reason: sync.reason };
+      const value = await fn();
+      return { ok: true, value };
+    } catch (e) {
+      console.error("Holat tranzaksiyasi xatosi:", e && e.message || e);
+      return { ok: false, reason: "tx_error" };
+    } finally {
+      if (store) store.state = false;
+      await releaseStateLock(acq.client);
+    }
+  };
+  if (st && st.save) return run();
+  return withSaveLock(run);
+}
+// Darhol saqlash; yiqilsa `rollback()` bajariladi va `false` qaytadi. Shu tufayli
+// saqlamagan pul amali uchun foydalanuvchiga muvaffaqiyat xabari yuborilmaydi.
+async function flushOrRollback(rollback) {
+  // Saqlash + rollback — bitta qulf ostida: oraga boshqa yozuv kirmaydi.
+  return withSaveLock(async () => {
+    if (await flushSaveAwaited()) return true;
+    try {
+      if (rollback) rollback();
+    } catch (e) {
+      console.error("rollback xatosi:", e && e.message || e);
+    }
+    return false;
+  });
+}
+// Ichki audit yozuvi: HTTP so'rovi talab qilinmaydi va tarix qisqartirilmaydi
+// (rad etilgan qaytim kabi hodisalar yo'qolmasligi kerak).
+function auditSys(action, target, meta) {
+  try {
+    db.auditLog.push({
+      id: nid("log"),
+      at: nowStr(),
+      actor: "system",
+      role: "system",
+      action: String(action || ""),
+      target: String(target || ""),
+      meta: meta ? String(meta).slice(0, 300) : "",
+      ip: ""
+    });
+  } catch (e) {
+    console.error("auditSys xatosi:", e && e.message || e);
+  }
 }
 var S = () => db.settings;
 // 1 obunachi necha kredit turadi (1:1 qoidasi).
@@ -401,19 +1029,138 @@ function botName(b) {
 function curBot() {
   return botCtx.getStore() || primaryBot() || { token: TOKEN };
 }
-async function tgWith(bot, method, params = {}, timeoutMs = 35e3) {
+// Telegram nosozlik turlari. Har bir tur ALOHIDA ishlanadi: 401 token
+// muammosi, 403 huquq/block, 400 noto'g'ri so'rov, 429 rate limit, 5xx esa
+// vaqtinchalik server xatosi. Ilgari hammasi bitta "xato" bo'lib qolardi.
+var TG_ERR = {
+  AUTH: "auth",
+  BLOCKED: "blocked",
+  BAD_REQUEST: "bad_request",
+  RATE_LIMIT: "rate_limit",
+  SERVER: "server",
+  NETWORK: "network",
+  NETWORK_TIMEOUT: "network_timeout",
+  NO_RIGHTS: "no_rights",
+  NOT_FOUND: "not_found",
+  UNKNOWN: "unknown"
+};
+function classifyTgFailure(r) {
+  if (!r || r.ok) return { errKind: "", transient: false, retryAfter: 0 };
+  // tgWith javobni allaqachon tasniflagan bo'lsa (masalan HTTP 502 HTML),
+  // qayta tasniflash uni yo'qotib qo'yardi.
+  if (r.errKind) {
+    return {
+      errKind: r.errKind,
+      transient: !!r.transient,
+      retryAfter: Math.max(0, Number(r.parameters && r.parameters.retry_after) || Number(r.retryAfter) || 0)
+    };
+  }
+  const code = Number(r.error_code) || 0;
+  const d = String(r.description || "");
+  const retryAfter = Math.max(0, Number(r.parameters && r.parameters.retry_after) || 0);
+  if (r.network) {
+    const timeout = /timeout|timed out|aborted/i.test(String(r.errKind || "") + " " + d);
+    return { errKind: timeout ? TG_ERR.NETWORK_TIMEOUT : TG_ERR.NETWORK, transient: true, retryAfter };
+  }
+  // 429 — faqat retry_after tugagandan keyin urinamiz (spec §2).
+  if (code === 429) return { errKind: TG_ERR.RATE_LIMIT, transient: true, retryAfter };
+  // 401 — token/autentifikatsiya. Vaqtinchalik deb belgilanadi, chunki bu
+  // hech qachon "bot administrator emas" degan fakt emas; admin xabardor qilinadi.
+  if (code === 401) return { errKind: TG_ERR.AUTH, transient: true, retryAfter: 0, authError: true };
+  if (code === 403) return { errKind: TG_ERR.BLOCKED, transient: false, retryAfter: 0 };
+  if (code >= 500) return { errKind: TG_ERR.SERVER, transient: true, retryAfter };
+  if (/chat not found|peer_id_invalid|channel_invalid|username not occupied|no channel found/i.test(d)) {
+    return { errKind: TG_ERR.NOT_FOUND, transient: false, retryAfter: 0 };
+  }
+  if (/not enough rights|chat_admin_required|have no rights|member list is inaccessible|bot is not a member/i.test(d)) {
+    return { errKind: TG_ERR.NO_RIGHTS, transient: false, retryAfter: 0 };
+  }
+  if (code === 400) return { errKind: TG_ERR.BAD_REQUEST, transient: false, retryAfter: 0 };
+  if (/timeout|timed out|ECONN|EAI_AGAIN|socket hang up|fetch failed|network/i.test(d)) {
+    return { errKind: TG_ERR.NETWORK, transient: true, retryAfter };
+  }
+  return { errKind: TG_ERR.UNKNOWN, transient: false, retryAfter: 0 };
+}
+// HTTP holati ham saqlanadi: Render proksisi "502 Bad Gateway" HTML qaytarsa
+// `r.json()` yiqilardi va xato tarmoq xatosi deb noto'g'ri tasniflanardi.
+// Bir nechta signalni birlashtirish (timeout + tashqi bekor qilish).
+function anySignal(signals) {
+  const list = (signals || []).filter(Boolean);
+  if (!list.length) return void 0;
+  if (list.length === 1) return list[0];
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") return AbortSignal.any(list);
+  const ac = new AbortController();
+  for (const s of list) {
+    if (s.aborted) {
+      ac.abort();
+      break;
+    }
+    s.addEventListener("abort", () => ac.abort(), { once: true });
+  }
+  return ac.signal;
+}
+async function tgWith(bot, method, params = {}, timeoutMs = 35e3, signal = null) {
   const token = (bot && bot.token) || "";
-  if (!token) return { ok: false, description: "Bot tokeni yo'q" };
+  const askedAt = Date.now();
+  if (!token) {
+    return { ok: false, error_code: 0, description: "Bot tokeni yo'q", errKind: TG_ERR.AUTH, transient: false, failedMethod: method, askedAt };
+  }
+  let httpStatus = 0;
+  let raw = "";
   try {
     const r = await fetch(`${API}/bot${token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(params),
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: anySignal([AbortSignal.timeout(timeoutMs), signal])
     });
-    return await r.json();
+    httpStatus = r.status;
+    raw = await r.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
+    if (!data || typeof data !== "object") {
+      const kind = httpStatus === 429 ? TG_ERR.RATE_LIMIT
+        : httpStatus >= 500 ? TG_ERR.SERVER
+        : httpStatus === 401 ? TG_ERR.AUTH
+        : httpStatus === 403 ? TG_ERR.BLOCKED
+        : TG_ERR.UNKNOWN;
+      return {
+        ok: false,
+        error_code: 0,
+        http_status: httpStatus,
+        description: `HTTP ${httpStatus}: ${raw.slice(0, 200).replace(/\s+/g, " ").trim() || "(bo'sh javob)"}`,
+        errKind: kind,
+        transient: kind === TG_ERR.SERVER || kind === TG_ERR.RATE_LIMIT,
+        failedMethod: method,
+        askedAt
+      };
+    }
+    if (data.ok) return data;
+    return { ...data, http_status: httpStatus, failedMethod: method, askedAt, ...classifyTgFailure(data) };
   } catch (e) {
-    return { ok: false, description: String(e), network: true };
+    const name = String((e && e.name) || "Error");
+    const msg = String((e && e.message) || e);
+    const aborted = !!(signal && signal.aborted);
+    const timeout = /timeout|aborted/i.test(name + " " + msg);
+    if (aborted) {
+      return { ok: false, aborted: true, error_code: 0, description: "aborted", errKind: TG_ERR.NETWORK, transient: true, failedMethod: method, askedAt };
+    }
+    return {
+      ok: false,
+      error_code: 0,
+      http_status: httpStatus,
+      description: `${name}: ${msg}`.slice(0, 240),
+      network: true,
+      errKind: timeout ? TG_ERR.NETWORK_TIMEOUT : TG_ERR.NETWORK,
+      transient: true,
+      failedMethod: method,
+      askedAt,
+      raw: raw.slice(0, 200)
+    };
   }
 }
 var tg = (method, params = {}, timeoutMs = 35e3) => tgWith(curBot(), method, params, timeoutMs);
@@ -429,16 +1176,39 @@ var notify = (u, text, extra = {}) => {
   const b = botCtx.getStore() || (u.botId ? botById(u.botId) : null) || primaryBot();
   return sendWith(b, u.chatId, text, extra);
 };
-async function checkMember(chat, userId) {
-  const r = await tg("getChatMember", { chat_id: chat, user_id: userId }, 15e3);
+// A'zolikni tekshirish — natija bilan birga SABAB ham qaytadi. Sababsiz
+// "error" keyinchalik "obunadan chiqdi" yoki "bot huquqsiz" bilan
+// aralashtirilib ketardi.
+// A'zolik tekshiruvi uchun kutish vaqti (testda qisqartiriladi).
+var TG_CHECK_TIMEOUT_MS = Math.max(500, Number(process.env.TG_CHECK_TIMEOUT_MS) || 15e3);
+async function checkMemberInfo(chat, userId, ctx = {}) {
+  const r = await tg("getChatMember", { chat_id: chat, user_id: userId }, TG_CHECK_TIMEOUT_MS);
   if (r.ok) {
     const st = r.result.status;
-    if (["member", "administrator", "creator"].includes(st)) return "member";
-    if (st === "restricted") return r.result.is_member ? "member" : "not_member";
-    return "not_member";
+    if (["member", "administrator", "creator"].includes(st)) return { result: "member", reason: "" };
+    if (st === "restricted") return r.result.is_member ? { result: "member", reason: "" } : { result: "not_member", reason: "restricted" };
+    return { result: "not_member", reason: "status_" + st };
   }
-  if (/user not found|PARTICIPANT_ID_INVALID/i.test(r.description || "")) return "not_member";
-  return "error";
+  if (/user not found|PARTICIPANT_ID_INVALID/i.test(r.description || "")) return { result: "not_member", reason: "user_invalid" };
+  const f = classifyTgFailure(r);
+  // 401 — token muammosi. Bu hech qachon "obunadan chiqdi" ham, "bot admin
+  // emas" ham emas; administratorga darhol xabar beriladi.
+  if (f.errKind === TG_ERR.AUTH) {
+    alertAdmins("tg_401", "\u26A0\uFE0F <b>Telegram 401 Unauthorized</b>\n\nBot tokeni yaroqsiz ko\u2018rinadi. Tekshiruvlar vaqtincha to\u2018xtatilmaydi, lekin natijalar ishonchsiz. Tokenni tekshiring: Render \u2192 Environment \u2192 TELEGRAM_BOT_TOKEN.");
+  }
+  // Har bir nosozlik to'liq diagnostika bilan bazaga va logga yoziladi.
+  const diag = recordVerifyFailure(tgDiag(r, "getChatMember", { chatId: chat, userId, ...ctx }));
+  return {
+    result: "error",
+    reason: f.errKind || TG_ERR.UNKNOWN,
+    transient: !!f.transient,
+    retryAfter: Number(f.retryAfter) || 0,
+    diag,
+    description: String(r.description || "")
+  };
+}
+async function checkMember(chat, userId) {
+  return (await checkMemberInfo(chat, userId)).result;
 }
 // --- Ko'p tillilik (spec §5) ---
 // Barcha foydalanuvchi matnlari shu katalogda. Yangi matn qo'shsangiz uch tilga ham yozing.
@@ -493,6 +1263,9 @@ var STR = {
     ord_yes: "✅ Tasdiqlash",
     ord_no: "❌ Bekor qilish",
     ord_created: "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)\n\nObunachilar navbat bilan qo‘shiladi.",
+    save_err: "⚠️ Ma’lumotni saqlashda xatolik yuz berdi. Amal bajarilmadi — birozdan so‘ng qayta urinib ko‘ring.",
+    ord_token_missing: "⚠️ Buyurtma ma’lumoti eskirgan yoki tasdiqlash kaliti yo‘q. Qaytadan boshlang: Kanallarim → kanal → miqdor.",
+    ord_inflight: "⏳ Buyurtma yaratilmoqda. Takroriy bosish yangi buyurtma yaratmaydi — bir necha soniyadan so‘ng holatni tekshiring.",
     ord_cancelled: "❌ Buyurtma bekor qilindi. Kredit band qilinmadi.",
     ord_short: "❌ Kredit yetmayapti.\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {lack} kredit\n\n📋 Vazifalarni bajarib kredit to‘plang.",
     stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit — ishlatsa bo‘ladigan\n🔒 Band: {r} kredit — faol buyurtmaga band\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
@@ -580,6 +1353,9 @@ var STR = {
     ord_yes: "✅ Подтвердить",
     ord_no: "❌ Отмена",
     ord_created: "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)\n\nПодписчики добавляются по очереди.",
+    save_err: "⚠️ Не удалось сохранить данные. Действие не выполнено — попробуйте ещё раз.",
+    ord_token_missing: "⚠️ Данные заказа устарели или отсутствует ключ подтверждения. Начните заново: Мои каналы → канал → количество.",
+    ord_inflight: "⏳ Заказ создаётся. Повторное нажатие не создаст новый заказ — проверьте статус через несколько секунд.",
     ord_cancelled: "❌ Заказ отменён. Кредиты не списаны.",
     ord_short: "❌ Недостаточно кредитов.\n\nНужно: {need}\nУ вас: {have}\nНе хватает: {lack}\n\n📋 Выполняйте задания, чтобы заработать кредиты.",
     stats_title: "📊 <b>Статистика</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Баланс: <b>{a}</b>\n🔒 Резерв: {r}\n💸 Израсходовано: {s}\n↩️ Возвращено: {ref}\n✅ Выполнено заданий: {done}\n📢 Каналов: {ch}\n🛒 Активных заказов: {ord}",
@@ -667,6 +1443,9 @@ var STR = {
     ord_yes: "✅ Confirm",
     ord_no: "❌ Cancel",
     ord_created: "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)\n\nSubscribers are added in queue order.",
+    save_err: "⚠️ Could not save the data. The action was not applied — please try again shortly.",
+    ord_token_missing: "⚠️ Order details are stale or the confirmation key is missing. Start again: My channels → channel → quantity.",
+    ord_inflight: "⏳ The order is being created. Repeating the tap will not create another order — check the status in a few seconds.",
     ord_cancelled: "❌ Order cancelled. No credits were reserved.",
     ord_short: "❌ Not enough credits.\n\nNeed: {need}\nYou have: {have}\nShortage: {lack}\n\n📋 Complete tasks to earn credits.",
     stats_title: "📊 <b>Statistics</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balance: <b>{a}</b>\n🔒 Reserved: {r}\n💸 Spent: {s}\n↩️ Refunded: {ref}\n✅ Completed tasks: {done}\n📢 Channels: {ch}\n🛒 Active orders: {ord}",
@@ -749,7 +1528,44 @@ Object.assign(STR.uz, {
   "choose_menu": "Kerakli amalni pastdagi menyudan tanlang.",
   "cancelled": "Bekor qilindi.",
   "lang_saved": "✅ Til o‘zgartirildi.",
-  "ord_fifo_short": "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)"
+  "ord_fifo_short": "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)",
+  "ch_err_address": "❌ Manzil noto‘g‘ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel",
+  "ch_err_channel": "❌ <b>Kanalni ochib bo‘lmadi.</b>\n\nSabab: Telegram bu manzilni topmadi yoki kanal o‘chirilgan/yopiq.\n\n• Kanal <b>ommaviy (public)</b> bo‘lishi shart\n• Manzil @ bilan yozilsin: <code>@mening_kanalim</code>\n\nBoshqa manzil yuboring yoki /cancel bosing.",
+  "ch_err_noadmin": "❌ <b>Bot bu kanalda administrator emas.</b>\n\nBu xato faqat Telegram botni kanal a’zosi sifatida ko‘rmaganda chiqadi.\n\nKanal sozlamalari → <b>Administratorlar</b> → botni qo‘shing (obunachilarni ko‘rish huquqi bilan) → manzilni qayta yuboring.",
+  "ch_err_rights": "🔒 <b>Bot administrator, lekin huquqi yetarli emas.</b>\n\nTelegram botga kanal a’zolarini o‘qishga ruxsat bermadi.\n\nKanal sozlamalari → Administratorlar → bot → <b>“Obunachilarni ko‘rish”</b> va <b>“Foydalanuvchilarni taklif qilish”</b> huquqlarini yoqing, so‘ng manzilni qayta yuboring.",
+  "ch_err_user": "❌ <b>Sizda bu kanalni boshqarish huquqi yo‘q.</b>\n\nFaqat o‘zingiz egasi yoki administratori bo‘lgan kanalni ulash mumkin.\n\nBoshqa odamning kanali bo‘lsa — egasidan bir martalik nazoratchi kodini so‘rang va “🔑 Kod kiritish” dan foydalaning.",
+  "ch_err_api": "⚠️ <b>Telegram hozir javob bermadi.</b>\n\nBu vaqtinchalik texnik xato (tarmoq yoki Telegram serveri). Sizda ayb yo‘q va bot admin emas degan xulosa chiqarilmaydi.\n\nBir necha daqiqadan so‘ng manzilni qayta yuboring.",
+  "ch_rights_warn": "\n\n⚠️ Bot administrator, lekin “foydalanuvchilarni taklif qilish” huquqi o‘chirilgan. A’zolikni tekshirish ishlaydi; kanal sozlamalarida bu huquqni yoqib qo‘yish tavsiya etiladi.",
+  "ch_bots_missing": "\n\n⚠️ <b>Bu kanalda administrator bo‘lmagan botlar:</b> {bots}.\n\nIshchi botlar ham obunani tekshiradi, shuning uchun ular ham kanalda administrator bo‘lishi kerak. Kanal sozlamalari → <b>Administratorlar</b> → har bir botni qo‘shing (“Obunachilarni ko‘rish” huquqi bilan).",
+  "ch_lost_warn": "⛔ <b>Diqqat:</b> bot bu kanalda administrator emas. Yangi vazifa berilmaydi va buyurtma qabul qilinmaydi. Kanal sozlamalari → Administratorlar → botni qo‘shing, so‘ng kanalni qayta ulang.",
+  "ch_err_order": "⛔ <b>Buyurtma yaratilmadi.</b>\n\nSabab: <b>{title}</b> kanalida bot huquqi tasdiqlanmadi. Kredit band qilinmadi.",
+  "ch_admin_lost_msg": "⚠️ <b>{title}</b> kanalida botning administrator huquqi yo‘qolgan.\n\nShu sababli kanalga <b>yangi vazifa berilmaydi</b> va faol buyurtmalar to‘xtatildi. Kredit va tarix saqlanadi.\n\nTuzatish: kanal sozlamalari → Administratorlar → botni qo‘shib, “Kanallarim” → kanal → qayta ulang.",
+  "ch_admin_restored_msg": "✅ <b>{title}</b> kanalida bot huquqi tiklandi. Kanal yana vazifa qabul qiladi.",
+  "verify_perm_err": "\n\n⛔ {n} ta kanalni tekshirib bo‘lmadi: bot ularda administrator emas yoki kanal o‘chirilgan. Bu obunadan chiqish deb hisoblanmaydi — kanal egalariga xabar yuborildi.",
+  "verify_temp_err": "\n\n⚠️ {n} ta kanalda Telegram vaqtincha javob bermadi (texnik xato). Sizda ayb yo‘q — keyinroq o‘zi qayta tekshiriladi.",
+  "set_notif_btn": "🔔 Bildirishnomalar",
+  "set_security_btn": "🛡 Hisob xavfsizligi",
+  "set_accounts_btn": "📱 Telegram hisoblari",
+  "set_main_btn": "🏠 Asosiy menyu",
+  "set_main_msg": "🏠 Asosiy menyu.",
+  "set_notif_title": "🔔 <b>Bildirishnomalar</b>\n\nHar bir turkumni alohida yoqish/o‘chirish mumkin — darhol saqlanadi.\n\n• Yangi tasdiqlangan obunachilar: {sub}\n• Referal bonuslari: {ref}\n• Buyurtma holati: {ord}\n• Texnik xabarlar: {tech}\n• Soatlik hisobot: {hourly}\n\n🛡 Xavfsizlik bildirishnomalari alohida — ularni o‘chirib bo‘lmaydi.",
+  "nt_sub": "👥 Yangi obunachilar",
+  "nt_ref": "🎁 Referal bonuslari",
+  "nt_ord": "🛒 Buyurtma holati",
+  "nt_tech": "🛠 Texnik xabarlar",
+  "set_sec_title": "🛡 <b>Hisob xavfsizligi</b>\n\n👤 Hisob: <code>{id}</code>\n📌 Holat: {status}\n🕒 Oxirgi faollik: {last}\n\n🔐 <b>Kirish</b>\nBot faqat Telegram orqali ishlaydi — alohida parol yo‘q. Hisobingizga faqat shu Telegram akkaunti kiradi; boshqa qurilmadan kirish uchun Telegram hisobingiz himoyasi (2FA) ishlatiladi.\n\n🔔 <b>Xavfsizlik bildirishnomalari:</b> doim yoniq (o‘chirilmaydi) — shubhali harakat, blok va huquq o‘zgarishlari shu chatga keladi.\n\nTizimda saqlanadigan sessiya: faqat shu bot chati (veb-panel sessiyalari bot hisobiga ta’sir qilmaydi).",
+  "sec_report_btn": "🚨 Shubhali kirish haqida xabar",
+  "sec_report_prompt": "🚨 <b>Xavfsizlik haqida xabar</b>\n\nNima sodir bo‘lganini bitta xabar bilan yozing (masalan: men obuna bo‘lmagan kanalga vazifa berilgan). Xabar adminga darhol boradi.\n\nBekor qilish: /cancel",
+  "sec_ok": "✅ Xabaringiz yuborildi. Admin tekshiradi.",
+  "st_active": "faol",
+  "st_blocked": "bloklangan",
+  "set_acc_title": "📱 <b>Telegram hisoblari</b>\n\n👤 <b>Shaxsiy akkaunt</b> (botga kiradigan hisob)\n• ID: <code>{id}</code>\n• Username: {username}\n• Ism: {name}\n• Til: {lang}\n\n📢 <b>Sizga bog‘langan kanallar: {n} ta</b>\n{list}\n\nℹ️ Shaxsiy akkaunt va kanal — alohida narsalar: akkaunt botga kiradi, kanal esa obunachi yig‘adigan manzil. Bitta akkaunt bir nechta kanalni boshqarishi mumkin.",
+  "acc_ch_line": "• <b>{title}</b> (@{username}) — {role} · bot: {bot}",
+  "acc_role_owner": "egasi",
+  "acc_role_ctl": "nazoratchi",
+  "acc_bot_ok": "admin ✅",
+  "acc_bot_no": "admin emas ⛔",
+  "acc_none": "— hali kanal ulanmagan"
 });
 Object.assign(STR.ru, {
   "paused": "⏸ Задания временно приостановлены. Попробуйте позже.",
@@ -764,7 +1580,44 @@ Object.assign(STR.ru, {
   "choose_menu": "Выберите действие в меню ниже.",
   "cancelled": "Отменено.",
   "lang_saved": "✅ Язык изменён.",
-  "ord_fifo_short": "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)"
+  "ord_fifo_short": "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)",
+  "ch_err_address": "❌ Неверный адрес. Отправьте адрес канала, например: <code>@moy_kanal</code>\n\nОтмена: /cancel",
+  "ch_err_channel": "❌ <b>Канал не удалось открыть.</b>\n\nПричина: Telegram не нашёл адрес, либо канал удалён/закрыт.\n\n• Канал должен быть <b>публичным</b>\n• Адрес с @: <code>@moy_kanal</code>\n\nОтправьте другой адрес или /cancel.",
+  "ch_err_noadmin": "❌ <b>Бот не администратор этого канала.</b>\n\nЭта ошибка возникает только когда Telegram не видит бота в канале.\n\nНастройки канала → <b>Администраторы</b> → добавьте бота (с правом просмотра участников) → отправьте адрес снова.",
+  "ch_err_rights": "🔒 <b>Бот администратор, но прав недостаточно.</b>\n\nTelegram не разрешил боту читать участников канала.\n\nНастройки канала → Администраторы → бот → включите <b>«Просмотр участников»</b> и <b>«Приглашение пользователей»</b>, затем отправьте адрес снова.",
+  "ch_err_user": "❌ <b>У вас нет прав на управление этим каналом.</b>\n\nДобавить можно только канал, где вы владелец или администратор.\n\nЕсли канал чужой — попросите одноразовый код контроллера и используйте «🔑 Ввести код».",
+  "ch_err_api": "⚠️ <b>Telegram сейчас не ответил.</b>\n\nЭто временная техническая ошибка (сеть или сервер Telegram). Вашей вины нет, и вывод «бот не администратор» НЕ делается.\n\nОтправьте адрес снова через несколько минут.",
+  "ch_rights_warn": "\n\n⚠️ Бот администратор, но право «приглашать пользователей» отключено. Проверка подписки работает; рекомендуем включить это право.",
+  "ch_bots_missing": "\n\n⚠️ <b>Боты, не являющиеся администраторами этого канала:</b> {bots}.\n\nРабочие боты тоже проверяют подписку, поэтому им также нужны права администратора. Настройки канала → <b>Администраторы</b> → добавьте каждого бота (с правом «Просмотр участников»).",
+  "ch_lost_warn": "⛔ <b>Внимание:</b> бот не администратор этого канала. Новые задания не выдаются, заказы не принимаются. Настройки канала → Администраторы → добавьте бота, затем подключите канал заново.",
+  "ch_err_order": "⛔ <b>Заказ не создан.</b>\n\nПричина: права бота в канале <b>{title}</b> не подтверждены. Кредиты не зарезервированы.",
+  "ch_admin_lost_msg": "⚠️ В канале <b>{title}</b> бот потерял права администратора.\n\nПоэтому новые задания в канал <b>не выдаются</b>, активные заказы приостановлены. Кредиты и история сохранены.\n\nИсправление: Настройки канала → Администраторы → добавьте бота, затем «Мои каналы» → канал → подключите снова.",
+  "ch_admin_restored_msg": "✅ Права бота в канале <b>{title}</b> восстановлены. Канал снова принимает задания.",
+  "verify_perm_err": "\n\n⛔ {n} канал(ов) проверить не удалось: бот там не администратор или канал удалён. Это не считается отпиской — владельцам каналов отправлено уведомление.",
+  "verify_temp_err": "\n\n⚠️ По {n} каналам Telegram временно не ответил. Вашей вины нет — проверка повторится автоматически.",
+  "set_notif_btn": "🔔 Уведомления",
+  "set_security_btn": "🛡 Безопасность",
+  "set_accounts_btn": "📱 Telegram-аккаунты",
+  "set_main_btn": "🏠 Главное меню",
+  "set_main_msg": "🏠 Главное меню.",
+  "set_notif_title": "🔔 <b>Уведомления</b>\n\nКаждый тип можно включить/отключить отдельно — сохраняется сразу.\n\n• Новые подтверждённые подписчики: {sub}\n• Реферальные бонусы: {ref}\n• Статус заказов: {ord}\n• Технические сообщения: {tech}\n• Ежечасный отчёт: {hourly}\n\n🛡 Уведомления безопасности — отдельно, их нельзя отключить.",
+  "nt_sub": "👥 Новые подписчики",
+  "nt_ref": "🎁 Реферальные бонусы",
+  "nt_ord": "🛒 Статус заказов",
+  "nt_tech": "🛠 Технические",
+  "set_sec_title": "🛡 <b>Безопасность аккаунта</b>\n\n👤 Аккаунт: <code>{id}</code>\n📌 Статус: {status}\n🕒 Последняя активность: {last}\n\n🔐 <b>Вход</b>\nБот работает только через Telegram — отдельного пароля нет. В аккаунт входит только этот Telegram-аккаунт; для защиты используйте 2FA Telegram.\n\n🔔 <b>Уведомления безопасности:</b> всегда включены — подозрительная активность, блокировки и изменения прав приходят в этот чат.\n\nСессия в системе: только этот чат с ботом (сессии веб-панели не влияют на аккаунт бота).",
+  "sec_report_btn": "🚨 Сообщить о подозрительном входе",
+  "sec_report_prompt": "🚨 <b>Сообщение о безопасности</b>\n\nОпишите ситуацию одним сообщением (например: задание выдано на канал, на который я не подписывался). Сообщение сразу уйдёт администратору.\n\nОтмена: /cancel",
+  "sec_ok": "✅ Сообщение отправлено. Администратор проверит.",
+  "st_active": "активен",
+  "st_blocked": "заблокирован",
+  "set_acc_title": "📱 <b>Telegram-аккаунты</b>\n\n👤 <b>Личный аккаунт</b> (тот, что пишет боту)\n• ID: <code>{id}</code>\n• Username: {username}\n• Имя: {name}\n• Язык: {lang}\n\n📢 <b>Связанные каналы: {n}</b>\n{list}\n\nℹ️ Личный аккаунт и канал — разные вещи: аккаунт входит в бота, канал собирает подписчиков. Один аккаунт может управлять несколькими каналами.",
+  "acc_ch_line": "• <b>{title}</b> (@{username}) — {role} · бот: {bot}",
+  "acc_role_owner": "владелец",
+  "acc_role_ctl": "контроллер",
+  "acc_bot_ok": "админ ✅",
+  "acc_bot_no": "не админ ⛔",
+  "acc_none": "— канал пока не подключён"
 });
 Object.assign(STR.en, {
   "paused": "⏸ Tasks are temporarily paused. Try later.",
@@ -779,6 +1632,43 @@ Object.assign(STR.en, {
   "choose_menu": "Choose an action from the menu below.",
   "cancelled": "Cancelled.",
   "lang_saved": "✅ Language changed.",
+  "ch_err_address": "❌ Invalid address. Send your channel address, e.g. <code>@my_channel</code>\n\nCancel: /cancel",
+  "ch_err_channel": "❌ <b>Could not open the channel.</b>\n\nReason: Telegram did not find the address, or the channel is deleted/private.\n\n• The channel must be <b>public</b>\n• The address must start with @: <code>@my_channel</code>\n\nSend another address or /cancel.",
+  "ch_err_noadmin": "❌ <b>The bot is not an administrator of this channel.</b>\n\nThis error appears only when Telegram does not see the bot in the channel.\n\nChannel settings → <b>Administrators</b> → add the bot (with permission to view members) → send the address again.",
+  "ch_err_rights": "🔒 <b>The bot is an administrator, but its permissions are insufficient.</b>\n\nTelegram did not allow the bot to read channel members.\n\nChannel settings → Administrators → bot → enable <b>“View members”</b> and <b>“Invite users”</b>, then send the address again.",
+  "ch_err_user": "❌ <b>You do not have management rights for this channel.</b>\n\nYou can add only a channel where you are the owner or an administrator.\n\nFor someone else's channel — ask the owner for a one-time controller code and use “🔑 Enter code”.",
+  "ch_err_api": "⚠️ <b>Telegram did not respond right now.</b>\n\nThis is a temporary technical error (network or Telegram server). It is not your fault, and it is NOT treated as “the bot is not an administrator”.\n\nSend the address again in a few minutes.",
+  "ch_rights_warn": "\n\n⚠️ The bot is an administrator, but “invite users” is disabled. Membership checks work; enabling that right is recommended.",
+  "ch_bots_missing": "\n\n⚠️ <b>Bots that are not administrators of this channel:</b> {bots}.\n\nWorker bots verify subscriptions too, so they also need administrator rights. Channel settings → <b>Administrators</b> → add each bot (with “View members” permission).",
+  "ch_lost_warn": "⛔ <b>Attention:</b> the bot is not an administrator of this channel. New tasks are not issued and orders are not accepted. Channel settings → Administrators → add the bot, then link the channel again.",
+  "ch_err_order": "⛔ <b>Order was not created.</b>\n\nReason: the bot's rights in <b>{title}</b> could not be confirmed. No credits were reserved.",
+  "ch_admin_lost_msg": "⚠️ The bot lost administrator rights in <b>{title}</b>.\n\nNew tasks for this channel are <b>not issued</b> and active orders are paused. Credits and history are preserved.\n\nFix: Channel settings → Administrators → add the bot, then “My channels” → channel → link again.",
+  "ch_admin_restored_msg": "✅ Bot rights in <b>{title}</b> are restored. The channel accepts tasks again.",
+  "verify_perm_err": "\n\n⛔ {n} channel(s) could not be checked: the bot is not an administrator there or the channel was deleted. This is not counted as an unsubscribe — channel owners were notified.",
+  "verify_temp_err": "\n\n⚠️ Telegram temporarily failed for {n} channel(s). Not your fault — the check will repeat automatically.",
+  "set_notif_btn": "🔔 Notifications",
+  "set_security_btn": "🛡 Account security",
+  "set_accounts_btn": "📱 Telegram accounts",
+  "set_main_btn": "🏠 Main menu",
+  "set_main_msg": "🏠 Main menu.",
+  "set_notif_title": "🔔 <b>Notifications</b>\n\nEach type can be toggled separately — saved instantly.\n\n• New verified subscribers: {sub}\n• Referral bonuses: {ref}\n• Order status: {ord}\n• Technical messages: {tech}\n• Hourly report: {hourly}\n\n🛡 Security notifications are separate and cannot be turned off.",
+  "nt_sub": "👥 New subscribers",
+  "nt_ref": "🎁 Referral bonuses",
+  "nt_ord": "🛒 Order status",
+  "nt_tech": "🛠 Technical",
+  "set_sec_title": "🛡 <b>Account security</b>\n\n👤 Account: <code>{id}</code>\n📌 Status: {status}\n🕒 Last activity: {last}\n\n🔐 <b>Sign-in</b>\nThe bot works only through Telegram — there is no separate password. Only this Telegram account can enter it; use Telegram 2FA to protect it.\n\n🔔 <b>Security notifications:</b> always on — suspicious activity, blocks and rights changes arrive in this chat.\n\nSession stored by the system: only this bot chat (web panel sessions do not affect the bot account).",
+  "sec_report_btn": "🚨 Report suspicious sign-in",
+  "sec_report_prompt": "🚨 <b>Security report</b>\n\nDescribe what happened in one message (e.g. a task was placed on a channel I never subscribed to). It goes straight to the admin.\n\nCancel: /cancel",
+  "sec_ok": "✅ Report sent. An admin will review it.",
+  "st_active": "active",
+  "st_blocked": "blocked",
+  "set_acc_title": "📱 <b>Telegram accounts</b>\n\n👤 <b>Personal account</b> (the one using the bot)\n• ID: <code>{id}</code>\n• Username: {username}\n• Name: {name}\n• Language: {lang}\n\n📢 <b>Channels linked to you: {n}</b>\n{list}\n\nℹ️ A personal account and a channel are different: the account uses the bot, the channel collects subscribers. One account can manage several channels.",
+  "acc_ch_line": "• <b>{title}</b> (@{username}) — {role} · bot: {bot}",
+  "acc_role_owner": "owner",
+  "acc_role_ctl": "controller",
+  "acc_bot_ok": "admin ✅",
+  "acc_bot_no": "not admin ⛔",
+  "acc_none": "— no channel linked yet",
   "ord_fifo_short": "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)"
 });
 
@@ -940,6 +1830,57 @@ function TRV(u, uzText, vars) {
   for (const k of Object.keys(vars || {})) out = out.split("{" + k + "}").join(String(vars[k]));
   return out;
 }
+// Tekshiruv nosozligi xabarlari (spec §6). Foydalanuvchi "Telegram buzuq"
+// degan umumiy matnni emas, ANIQ sababni ko'radi.
+Object.assign(STR.uz, {
+  verify_perm_err: "\n\n⛔ {n} ta kanalni tekshirib bo‘lmadi — sabab: {reason}. Bu obunadan chiqish deb hisoblanmaydi.",
+  verify_retry_saved: "\n\n⚠️ {n} ta kanalni hozircha tekshirib bo‘lmadi — sabab: {reason}. Bu sizning aybingiz emas: qayta tekshiruv saqlandi, taxminan {mins} daqiqadan keyin avtomatik bajariladi.",
+  verify_temp_err: "\n\n⚠️ {n} ta kanalni hozircha tekshirib bo‘lmadi — sabab: {reason}. Bu sizning aybingiz emas. Birozdan keyin “✅ Obuna bo‘ldim” tugmasini qayta bosing.",
+  vr_no_rights: "bot bu kanalda administrator emas yoki kerakli huquqi yo‘q",
+  vr_not_found: "kanal topilmadi yoki o‘chirilgan",
+  vr_blocked: "bot kanaldan chiqarilgan yoki bloklangan",
+  vr_bad_request: "kanal ID si noto‘g‘ri yoki kanal yopiq",
+  vr_temp: "Telegram vaqtincha javob bermadi",
+  vr_unknown: "Telegram noma’lum xato qaytardi"
+});
+Object.assign(STR.ru, {
+  verify_perm_err: "\n\n⛔ Не удалось проверить каналов: {n} — причина: {reason}. Это не считается отпиской.",
+  verify_retry_saved: "\n\n⚠️ Пока не удалось проверить каналов: {n} — причина: {reason}. Вашей вины нет: повторная проверка сохранена и выполнится автоматически примерно через {mins} мин.",
+  verify_temp_err: "\n\n⚠️ Пока не удалось проверить каналов: {n} — причина: {reason}. Вашей вины нет. Через некоторое время нажмите «✅ Я подписался» ещё раз.",
+  vr_no_rights: "бот не администратор канала или у него нет нужных прав",
+  vr_not_found: "канал не найден или удалён",
+  vr_blocked: "бот удалён из канала или заблокирован",
+  vr_bad_request: "неверный ID канала или канал закрыт",
+  vr_temp: "Telegram временно не ответил",
+  vr_unknown: "Telegram вернул неизвестную ошибку"
+});
+Object.assign(STR.en, {
+  verify_perm_err: "\n\n⛔ {n} channel(s) could not be checked — reason: {reason}. This is not counted as an unsubscribe.",
+  verify_retry_saved: "\n\n⚠️ {n} channel(s) could not be checked yet — reason: {reason}. Not your fault: a retry has been queued and will run automatically in about {mins} min.",
+  verify_temp_err: "\n\n⚠️ {n} channel(s) could not be checked yet — reason: {reason}. Not your fault. Press “✅ I subscribed” again a bit later.",
+  vr_no_rights: "the bot is not an administrator of that channel or lacks the required rights",
+  vr_not_found: "the channel was not found or was deleted",
+  vr_blocked: "the bot was removed from the channel or blocked",
+  vr_bad_request: "invalid channel ID or the channel is private",
+  vr_temp: "Telegram temporarily did not respond",
+  vr_unknown: "Telegram returned an unknown error"
+});
+function verifyReasonText(u, kind) {
+  const map = {
+    [TG_ERR.NO_RIGHTS]: "vr_no_rights",
+    [TG_ERR.NOT_FOUND]: "vr_not_found",
+    channel_missing: "vr_not_found",
+    [TG_ERR.BLOCKED]: "vr_blocked",
+    [TG_ERR.BAD_REQUEST]: "vr_bad_request",
+    [TG_ERR.NETWORK]: "vr_temp",
+    [TG_ERR.NETWORK_TIMEOUT]: "vr_temp",
+    [TG_ERR.SERVER]: "vr_temp",
+    [TG_ERR.RATE_LIMIT]: "vr_temp",
+    [TG_ERR.AUTH]: "vr_temp",
+    api: "vr_temp"
+  };
+  return T(u, map[kind] || "vr_unknown");
+}
 var MENU = menuFor({ language: "uz" });
 var MENU_LABELS = new Set(Object.keys(LABEL2KEY));
 
@@ -950,14 +1891,13 @@ function getUser(from, chatId) {
   let isNew = false;
   if (!db.users[key]) {
     isNew = true;
-    const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
     db.users[key] = {
       id: `u-${from.id}`,
       telegramId: from.id,
       username: from.username,
       displayName: [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || String(from.id),
       language: ["uz", "ru", "en"].includes(String(from.language_code || "").slice(0, 2)) ? String(from.language_code).slice(0, 2) : "uz",
-      credits: { available: bonus, reserved: 0, spent: 0, refunded: 0, verifiedRewards: 0, selfReportedRewards: 0, signupBonus: bonus },
+      credits: { available: 0, reserved: 0, spent: 0, refunded: 0, verifiedRewards: 0, selfReportedRewards: 0, signupBonus: 0 },
       registeredAt: nowStr(),
       referralCode: `REF_${from.id}`,
       isReferralVerified: false,
@@ -969,10 +1909,9 @@ function getUser(from, chatId) {
       notifications: true,
       notif: { subscribers: true, referrals: true, orders: true, technical: true }
     };
-    if (bonus > 0) {
-      addTx(db.users[key], bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi", { idempotencyKey: `signup:${db.users[key].id}` });
-      console.log(`Yangi foydalanuvchi ${from.id} — +${bonus} kredit sovg'a`);
-    }
+    // Sovg'a `getUser()` ichida emas, chaqiruvchi (async) joyda beriladi:
+    // Postgres rejimida yozuvni kutish kerak, `getUser()` esa sinxron.
+    if (Math.max(0, Number(S().creditRewardSignup) || 0) > 0) db.users[key].signupPending = true;
   }
   const u = db.users[key];
   u.chatId = chatId;
@@ -998,11 +1937,119 @@ function addTx(u, amount, type, description, extra = {}) {
     balanceAfter: u.credits.available,
     createdAt: nowStr(),
     idempotencyKey: key,
+    ...(CURRENT_OP ? { opId: CURRENT_OP } : {}),
     ...extra
   });
   // Tarixiy yozuvlar o'chirilmaydi (spec §8): faqat hajm katta bo'lsa ogohlantiramiz.
   if (db.transactions.length === 2e4) console.warn("Tranzaksiyalar 20000 taga yetdi — jurnal o'chirilmaydi, arxivlash rejasi kerak.");
   return true;
+}
+// Admin qo'lda tuzatishi (qo'shish/ayirish). Ilgari balans `Math.max(0, ...)`
+// bilan klamplenardi va jurnalga to'liq summa yozilardi — natijada manfiy
+// qoldiq holatida balans bilan jurnal farq qilardi. Endi:
+//  - jurnal va balans birga, bitta sinxron blokda o'zgaradi;
+//  - manfiy qoldiqqa olib keladigan tuzatish rad etiladi (jurnal buzilmaydi);
+//  - `idempotencyKey` berilsa, takroriy so'rov (double-click, retry) ikkinchi
+//    marta qo'llanmaydi.
+function adminAdjust(t, n, reason, idempotencyKey) {
+  if (!t || !Number.isFinite(n) || !n) return { ok: false, reason: "invalid" };
+  const next = t.credits.available + n;
+  if (next < 0) return { ok: false, reason: "insufficient", balance: t.credits.available };
+  const key = String(idempotencyKey || "");
+  if (key && db.transactions.some((x) => x.idempotencyKey === key)) {
+    return { ok: false, reason: "duplicate", balance: t.credits.available };
+  }
+  const ok = addTx(t, n, "admin_adjustment", reason, { idempotencyKey: key, adminAdjust: true });
+  if (!ok) return { ok: false, reason: "duplicate", balance: t.credits.available };
+  t.credits.available = next;
+  db.transactions[db.transactions.length - 1].balanceAfter = next;
+  return { ok: true, balance: next };
+}
+// Admin tuzatishi + DARHOL saqlash. Saqlash yiqilsa tuzatish qaytariladi va
+// natija `save_failed` bo'ladi — chaqiruvchi muvaffaqiyat xabarini yubormaydi.
+async function applyAdminAdjust(t, n, reason, idempotencyKey) {
+  // Instanslararo kritik bo'lim: qulf → eng so'nggi holat → mutatsiya → yozuv.
+  // Ikki instans bir foydalanuvchiga parallel tuzatish yuborsa, ikkinchisi
+  // birinchisining yozuvini yo'qotmaydi (qayta o'qilgan holat ustida ishlaydi).
+  const res = await withStateTx(async () => {
+    const endOp = opStart("adj");
+    const snap = creditsSnapshot(t);
+    const adj = adminAdjust(t, n, reason, idempotencyKey);
+    endOp();
+    if (!adj.ok) return adj;
+    if (!(await flushOrRollback(() => creditsRestore(t, snap))))
+      return { ok: false, reason: "save_failed", balance: t.credits.available };
+    return adj;
+  });
+  if (!res.ok) return { ok: false, reason: "save_failed", balance: t.credits.available };
+  return res.value;
+}
+// Ro'yxatdan o'tish sovg'asi (bir marta, jurnal yozuvi bilan, darhol saqlanadi).
+// Qaytaradi: berilgan summa yoki `0` (o'chirilgan) / `-1` (saqlanmadi).
+async function grantSignupBonus(u) {
+  if (!u || !u.signupPending) return 0;
+  const res = await withStateTx(async () => {
+    // Qayta o'qilgan holatda boshqa instans sovg'ani allaqachon bergan bo'lishi
+    // mumkin — bayroq yangilangan (`liveSync` havolani saqlaydi).
+    if (!u.signupPending) return 0;
+    u.signupPending = false;
+    const bonus = Math.max(0, Number(S().creditRewardSignup) || 0);
+    if (!(bonus > 0)) return 0;
+    const endOp = opStart("signup");
+    const snap = creditsSnapshot(u);
+    if (!addTx(u, bonus, "signup_bonus", "Ro'yxatdan o'tish sovg'asi", { idempotencyKey: `signup:${u.id}` })) {
+      endOp();
+      return 0;
+    }
+    u.credits.available = (Number(u.credits.available) || 0) + bonus;
+    u.credits.signupBonus = bonus;
+    db.transactions[db.transactions.length - 1].balanceAfter = u.credits.available;
+    endOp();
+    if (!(await flushOrRollback(() => creditsRestore(u, snap)))) {
+      // Saqlanmadi: sovg'a qaytarildi va BAYROQ qayta qo'yildi — foydalanuvchi
+      // keyingi xabarida yana urinamiz (idempotency kaliti hali bo'sh).
+      u.signupPending = true;
+      console.error(`signup_bonus saqlanmadi (${u.id}) — sovg'a qaytarildi`);
+      return -1;
+    }
+    return bonus;
+  });
+  if (!res.ok) {
+    u.signupPending = true;
+    console.error(`signup_bonus: holat tranzaksiyasi bajarilmadi (${u.id}, ${res.reason})`);
+    return -1;
+  }
+  return res.value;
+}
+// Kanal ulash sovg'asi (bir marta). Qaytaradi: summa, `0` (berilmagan) yoki
+// `-1` (saqlanmadi — sovg'a qaytarildi).
+async function grantChannelLinkBonus(u, ch) {
+  if (!u || u.channelBonusGiven) return 0;
+  const res = await withStateTx(async () => {
+    const linkBonus = u.channelBonusGiven ? 0 : Math.max(0, Number(S().creditRewardChannelLink) || 0);
+    if (!(linkBonus > 0)) return 0;
+    const endOp = opStart("chlink");
+    const snap = creditsSnapshot(u);
+    u.channelBonusGiven = true;
+    u.credits.available = (Number(u.credits.available) || 0) + linkBonus;
+    addTx(u, linkBonus, "channel_link_bonus", "Kanal ulandi: " + ch.title, { idempotencyKey: `chlink:${ch.id}` });
+    db.transactions[db.transactions.length - 1].balanceAfter = u.credits.available;
+    endOp();
+    if (!(await flushOrRollback(() => {
+      creditsRestore(u, snap);
+      u.channelBonusGiven = false;
+    }))) {
+      console.error(`channel_link_bonus saqlanmadi (${u.id}) — sovg'a qaytarildi`);
+      return -1;
+    }
+    return linkBonus;
+  });
+  if (!res.ok) {
+    u.channelBonusGiven = false;
+    console.error(`channel_link_bonus: holat tranzaksiyasi bajarilmadi (${u.id}, ${res.reason})`);
+    return -1;
+  }
+  return res.value;
 }
 // Balansdagi kreditni foydalanuvchining o'z kanaliga avtomatik buyurtmaga
 // aylantiradi (1 kredit = 1 obunachi). Shu tufayli kredit bo'sh turmaydi va
@@ -1029,6 +2076,10 @@ function autoOrderFromBalance(u) {
     o.requestedQuantity += qty;
     o.pendingQuantity += qty;
     o.totalCost = (o.totalCost || 0) + cost;
+    // Bepul birliklardan iborat buyurtmaga pullik birlik qo'shilsa, birlik
+    // narxi yozilishi shart — aks holda tasdiqlashda `reserved` hech qachon
+    // kamaymaydi va kredit qaytarilmaydi.
+    if (!(Number(o.unitCost) > 0)) o.unitCost = unit;
   } else {
     o = {
       id: nid("ord"),
@@ -1047,7 +2098,8 @@ function autoOrderFromBalance(u) {
       freeUnits: 0,
       status: "active",
       source: "auto_balance",
-      createdAt: nowStr()
+      createdAt: nowStr(),
+      ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
     };
     db.orders.push(o);
     u.activeOrdersCount = (u.activeOrdersCount || 0) + 1;
@@ -1058,7 +2110,12 @@ function autoOrderFromBalance(u) {
   save();
   return { channel: ch, qty, cost, order: o };
 }
+// OPEN — hali yakunlanmagan barcha vazifalar (ichki tekshiruv uchun).
+// FIFO — faqat navbatga qaytariladigan va foydalanuvchiga ko'rsatiladigan
+// holatlar. CHECK_ERROR bu yerda YO'Q: vaqtinchalik xato olgan vazifa navbatga
+// qaytmaydi, uni faqat TASK_CHECK jobi qayta tekshiradi (spec §2).
 var OPEN = /* @__PURE__ */ new Set(["ACTIVE", "PENDING", "RECHECK", "CHECK_ERROR"]);
+var FIFO = /* @__PURE__ */ new Set(["ACTIVE", "PENDING"]);
 var destOf = (id) => db.channels.find((c) => c.id === id) || db.igProfiles.find((p) => p.id === id);
 var orderAssigned = (o) => db.tasks.filter((t) => t.orderId === o.id && t.status !== "CANCELLED").length;
 // Berilgan foydalanuvchiga nechta yangi vazifa biriktirish (FIFO: buyurtma seq bo'yicha).
@@ -1069,6 +2126,9 @@ function assignFresh(u, platform, need) {
     if (added.length >= need) break;
     const dest = destOf(o.destinationId);
     if (!dest) continue;
+    // Pauza qilingan, uzilgan yoki bot huquqini yo'qotgan kanalga yangi vazifa
+    // berilmaydi (spec §1.9, §7).
+    if (dest.disconnectedAt || (dest.status && dest.status !== "active")) continue;
     if (platform === "telegram" && (dest.controllers || []).some((c) => c.userId === u.id)) continue;
     if (db.tasks.some((t2) => t2.assignedTo === u.id && t2.destinationId === o.destinationId && (t2.status !== "CANCELLED" || t2.unsubscribed))) continue;
     if (orderAssigned(o) >= o.requestedQuantity - o.cancelledQuantity) continue;
@@ -1093,9 +2153,9 @@ function assignFresh(u, platform, need) {
   return added;
 }
 function getBatch(u, platform) {
-  const open = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence);
+  const open = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && FIFO.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence);
   if (open.length < 10) assignFresh(u, platform, 10 - open.length);
-  return db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
+  return db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && FIFO.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
 }
 // Nima uchun navbatda shuncha kanal borligini tushuntirish uchun hisob-kitob.
 function taskSupply(u, platform) {
@@ -1120,7 +2180,7 @@ function taskSupply(u, platform) {
 function getNextBatch(u, platform) {
   const before = new Set(db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform).map((t) => t.id));
   assignFresh(u, platform, 10);
-  const fresh = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status) && !before.has(t.id)).sort((a, b) => a.queueSequence - b.queueSequence);
+  const fresh = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && FIFO.has(t.status) && !before.has(t.id)).sort((a, b) => a.queueSequence - b.queueSequence);
   if (fresh.length) return fresh.slice(0, 10);
   // Yangi vazifa yo'q — mavjudlarini qaytaramiz va buni matnda aytamiz.
   return getBatch(u, platform).map((t) => ({ ...t, noMore: true }));
@@ -1163,7 +2223,8 @@ function ensureMembership(userId, channelId) {
     lastCheckResult: "",
     consecutiveCheckErrors: 0,
     createdAt: t,
-    updatedAt: t
+    updatedAt: t,
+    ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
   };
   db.memberships.push(m);
   return m;
@@ -1179,7 +2240,8 @@ function membershipEvent(userId, channelId, eventType, oldStatus, newStatus, sou
     source: source || "",
     eventTime: (/* @__PURE__ */ new Date()).toISOString(),
     apiResult: apiResult || "",
-    relatedTaskId: taskId || ""
+    relatedTaskId: taskId || "",
+    ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
   });
   if (db.membershipEvents.length > 5e4) db.membershipEvents.splice(0, 1e4);
 }
@@ -1188,7 +2250,18 @@ function scheduleMembershipCheck(m, atMs, jobType = "RECHECK") {
   const at = new Date(atMs).toISOString();
   m.nextCheckAt = at;
   m.updatedAt = at;
-  const key = `${jobType}:${m.userId}:${m.channelId}:${Math.floor(atMs / 36e5)}`;
+  // Bu a'zolik uchun ochiq job bo'lsa — uni qayta rejalashtiramiz, yangisini
+  // yaratmaymiz. Ilgari kalit soat oynasi bo'yicha edi va DONE bo'lgan eski
+  // job ham kalitni band qilardi: yangi tekshiruv yaratilmasdan nextCheckAt
+  // yangilanib, a'zolik jimgina kuzatuvdan chiqib ketardi.
+  const open = db.verificationJobs.find(
+    (j) => j.membershipId === m.id && j.jobType === jobType && (j.status === "PENDING" || j.status === "RUNNING")
+  );
+  if (open) {
+    if (open.status === "PENDING") open.scheduledAt = at;
+    return null;
+  }
+  const key = `verify:${jobType}:${m.userId}:${m.channelId}:${atMs}`;
   if (db.verificationJobs.some((j) => j.idempotencyKey === key)) return null;
   const job = {
     id: nid("job"),
@@ -1202,10 +2275,72 @@ function scheduleMembershipCheck(m, atMs, jobType = "RECHECK") {
     lastError: "",
     lockedAt: "",
     completedAt: "",
-    idempotencyKey: key
+    idempotencyKey: key,
+    ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
   };
   db.verificationJobs.push(job);
   return job;
+}
+// Vazifa tekshiruvini qayta urinish navbatiga yozadi (restart-safe).
+// Ilgari `retryAt` faqat yozilardi, lekin uni HECH KIM o'qimasdi: xato olgan
+// vazifa faqat foydalanuvchi tugmani yana bosganda tekshirilardi.
+function scheduleTaskCheck(t, atMs) {
+  const at = new Date(atMs).toISOString();
+  const open = db.verificationJobs.find(
+    (j) => j.jobType === "TASK_CHECK" && j.taskId === t.id && (j.status === "PENDING" || j.status === "RUNNING")
+  );
+  if (open) {
+    if (open.status === "PENDING") open.scheduledAt = at;
+    return open;
+  }
+  const key = `taskcheck:${t.id}:${Math.round(atMs / 1e4)}`;
+  if (db.verificationJobs.some((j) => j.idempotencyKey === key)) return null;
+  const job = {
+    id: nid("job"),
+    membershipId: "",
+    taskId: t.id,
+    userId: t.assignedTo,
+    channelId: t.destinationId,
+    jobType: "TASK_CHECK",
+    scheduledAt: at,
+    status: "PENDING",
+    attemptCount: 0,
+    lastError: "",
+    lastErrorCode: 0,
+    lockedAt: "",
+    completedAt: "",
+    idempotencyKey: key,
+    ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
+  };
+  db.verificationJobs.push(job);
+  return job;
+}
+// Eski holatda qolib ketgan vazifalar uchun qayta urinish jobi (migratsiya).
+function repairTaskChecks() {
+  let n = 0;
+  for (const t of db.tasks) {
+    if (t.status !== "CHECK_ERROR" && t.status !== "RECHECK") continue;
+    // RECHECK endi FIFO'da ko'rsatilmaydi — yagona yo'l TASK_CHECK jobi.
+    t.status = "CHECK_ERROR";
+    const open = db.verificationJobs.some(
+      (j) => j.jobType === "TASK_CHECK" && j.taskId === t.id && (j.status === "PENDING" || j.status === "RUNNING")
+    );
+    if (open) continue;
+    const delay = retryDelayMs(t.consecutiveCheckErrors || 1, 0);
+    if (scheduleTaskCheck(t, Date.now() + delay)) n++;
+  }
+  return n;
+}
+function cancelTaskCheck(taskId) {
+  let n = 0;
+  for (const j of db.verificationJobs) {
+    if (j.jobType === "TASK_CHECK" && j.taskId === taskId && j.status === "PENDING") {
+      j.status = "CANCELLED";
+      j.completedAt = new Date().toISOString();
+      n++;
+    }
+  }
+  return n;
 }
 function taskForPair(userId, channelId) {
   return db.tasks.filter((t) => t.assignedTo === userId && t.destinationId === channelId)
@@ -1253,108 +2388,188 @@ function markRejoined(userId, channelId) {
   }
   return null;
 }
+// Bir vaqtda kelgan ikkinchi chaqiruvni to'sadigan to'plam (job + tugma).
+var APPLYING_TASKS = /* @__PURE__ */ new Set();
+// Vazifani tasdiqlash — ATOMAR va IDEMPOTENT (spec §1).
+//  - `reward:<taskId>` — yagona himoya kaliti. Kalit jurnalda bo'lsa funksiya
+//    hech qanday hisoblagichga tegmaydi; jurnal yozilmasa ham shunday.
+//  - Butun tana sinxron (await yo'q): jurnal yozuvi, available, reserved,
+//    spent, order.verifiedQuantity va task.status bir operatsiya sifatida
+//    bajariladi — oraliq holat hech qachon ko'rinmaydi.
+//  - Istisno bo'lsa barcha o'zgarishlar orqaga qaytariladi (yarimta natija yo'q).
+//  - VERIFIED / SELF_CONFIRMED / CANCELLED vazifa hech qachon qayta yozilmaydi.
 function applyVerified(u, t) {
+  if (!u || !t) return 0;
+  const key = `reward:${t.id}`;
+  if (t.status === "VERIFIED" || t.status === "SELF_CONFIRMED" || t.status === "CANCELLED") return 0;
+  if (APPLYING_TASKS.has(t.id)) return 0;
+  if (db.transactions.some((x) => x.idempotencyKey === key)) return 0;
   const o = db.orders.find((x) => x.id === t.orderId);
   if (!o || o.status === "cancelled" || o.status === "completed") {
     t.status = "CANCELLED";
     return 0;
   }
   const self = t.platform === "instagram";
-  t.status = self ? "SELF_CONFIRMED" : "VERIFIED";
-  t.verifiedAt = (/* @__PURE__ */ new Date()).toISOString();
-  t.checkedAt = t.verifiedAt;
-  // O'zi tasdiqlagan (Instagram) amal tasdiqlangan mukofot bermaydi (spec §2).
-  // Administrator xohlasa panelda 0 dan katta qiymat qo'yadi.
+  // O'zi tasdiqlagan (Instagram) amal TASDIQLANGAN mukofot bermaydi (spec §2):
+  // standart qiymat 0, alohida `selfReportedRewards` hisoblagichiga yoziladi.
   const reward = self ? Math.max(0, Number(S().creditRewardInstagramSelfConfirmed) || 0) : Math.max(0, Number(t.rewardCredits) || 0);
-  o.verifiedQuantity++;
-  o.pendingQuantity = Math.max(0, o.pendingQuantity - 1);
-  const owner = userById(o.userId);
-  // Bepul birliklar (admin grant / referal bonusi) egasidan kredit yechmaydi.
-  if (o.freeUnits > 0) {
-    o.freeUnits -= 1;
-  } else if (owner) {
-    owner.credits.reserved = Math.max(0, owner.credits.reserved - o.unitCost);
-    owner.credits.spent += o.unitCost;
-  }
   const dest = destOf(o.destinationId);
-  if (dest) {
-    if (self) {
-      dest.selfReportedFollowers++;
-      dest.pendingFollowers = Math.max(0, dest.pendingFollowers - 1);
-    } else {
-      dest.verifiedSubscribers++;
-      dest.activeSubscribers++;
-      dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - 1);
-    }
-  }
-  if (reward > 0) {
-    u.credits.available += reward;
-    self ? u.credits.selfReportedRewards += reward : u.credits.verifiedRewards += reward;
-    addTx(u, reward, "reward_task", `${self ? "Instagram (o\u2018zi tasdiqlagan)" : "Telegram"}: ${t.destinationTitle}`, {
+  const memBefore = !self && db.memberships.find((m) => m.userId === u.id && m.channelId === t.destinationId) || null;
+  const snap = {
+    task: { status: t.status, verifiedAt: t.verifiedAt, checkedAt: t.checkedAt },
+    order: { verifiedQuantity: o.verifiedQuantity, pendingQuantity: o.pendingQuantity, freeUnits: o.freeUnits, status: o.status, completedAt: o.completedAt },
+    user: { available: u.credits.available, reserved: u.credits.reserved, spent: u.credits.spent, verifiedRewards: u.credits.verifiedRewards, selfReportedRewards: u.credits.selfReportedRewards, completedTasksCount: u.completedTasksCount, activeOrdersCount: u.activeOrdersCount },
+    dest: dest ? { verifiedSubscribers: dest.verifiedSubscribers, activeSubscribers: dest.activeSubscribers, pendingSubscriptions: dest.pendingSubscriptions, pendingFollowers: dest.pendingFollowers, selfReportedFollowers: dest.selfReportedFollowers } : null,
+    mem: memBefore ? { ...memBefore } : null,
+    len: { tx: db.transactions.length, log: db.verifyLog.length, ev: db.membershipEvents.length, job: db.verificationJobs.length, mem: db.memberships.length }
+  };
+  APPLYING_TASKS.add(t.id);
+  try {
+    // 1) Jurnal yozuvi BIRINCHI. Kalit band bo'lsa — hech narsa o'zgarmaydi.
+    const desc = reward > 0 ? `${self ? "Instagram (o\u2018zi tasdiqlagan)" : "Telegram"}: ${t.destinationTitle}` : `${t.destinationTitle} (Instagram \u2014 o\u2018zi tasdiqlagan, kredit berilmadi)`;
+    const okTx = addTx(u, reward, "reward_task", desc, {
       orderId: o.id,
       channelId: t.destinationId,
       relatedTaskId: t.id,
-      idempotencyKey: `reward:${t.id}`
+      idempotencyKey: key,
+      ...(reward > 0 ? {} : { nonPayable: true })
     });
-  } else {
-    self && (u.credits.selfReportedRewards += 0);
-    addTx(u, 0, "reward_task", `${t.destinationTitle} (Instagram \u2014 o\u2018zi tasdiqlagan, kredit berilmadi)`, {
-      orderId: o.id,
-      channelId: t.destinationId,
-      relatedTaskId: t.id,
-      idempotencyKey: `reward:${t.id}`,
-      nonPayable: true
-    });
-  }
-  u.completedTasksCount++;
-  if (!self) {
-    // Telegram a'zoligi tasdiqlandi — registrga yozamiz va 24 soatlik qayta
-    // tekshiruvni rejalashtiramiz.
-    const m = ensureMembership(u.id, t.destinationId);
-    const oldStatus = m.status;
-    const at = (/* @__PURE__ */ new Date()).toISOString();
-    m.status = "ACTIVE";
-    m.firstVerifiedAt = m.firstVerifiedAt || at;
-    m.lastCheckedAt = at;
-    m.lastCheckResult = "member";
-    m.consecutiveCheckErrors = 0;
-    m.updatedAt = at;
-    if (oldStatus !== "ACTIVE") {
-      m.lastMembershipChangeAt = at;
-      membershipEvent(u.id, t.destinationId, oldStatus === "CANCELLED" ? "REJOINED" : "FIRST_VERIFIED", oldStatus, "ACTIVE", "task_verify", "member", t.id);
+    if (!okTx) return 0;
+    // 2) Vazifa va buyurtma.
+    t.status = self ? "SELF_CONFIRMED" : "VERIFIED";
+    t.verifiedAt = (/* @__PURE__ */ new Date()).toISOString();
+    t.checkedAt = t.verifiedAt;
+    o.verifiedQuantity++;
+    o.pendingQuantity = Math.max(0, o.pendingQuantity - 1);
+    const owner = userById(o.userId);
+    // Bepul birliklar (admin grant / referal bonusi) egasidan kredit yechmaydi.
+    if (o.freeUnits > 0) {
+      o.freeUnits -= 1;
+    } else if (owner) {
+      owner.credits.reserved = Math.max(0, owner.credits.reserved - o.unitCost);
+      owner.credits.spent += o.unitCost;
     }
-    scheduleMembershipCheck(m, Date.now() + memRecheckDelay());
+    if (dest) {
+      if (self) {
+        dest.selfReportedFollowers = (dest.selfReportedFollowers || 0) + 1;
+        dest.pendingFollowers = Math.max(0, dest.pendingFollowers - 1);
+      } else {
+        dest.verifiedSubscribers = (dest.verifiedSubscribers || 0) + 1;
+        dest.activeSubscribers = (dest.activeSubscribers || 0) + 1;
+        dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - 1);
+      }
+    }
+    // 3) Mukofotni oluvchining hamyoni va hisoblagichlari.
+    if (reward > 0) {
+      u.credits.available += reward;
+      self ? u.credits.selfReportedRewards += reward : u.credits.verifiedRewards += reward;
+    }
+    u.completedTasksCount++;
+    // 4) A'zolik registri + 24 soatlik qayta tekshiruv (faqat Telegram).
+    if (!self) {
+      const m = ensureMembership(u.id, t.destinationId);
+      const oldStatus = m.status;
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      m.status = "ACTIVE";
+      m.firstVerifiedAt = m.firstVerifiedAt || at;
+      m.lastCheckedAt = at;
+      m.lastCheckResult = "member";
+      m.consecutiveCheckErrors = 0;
+      m.updatedAt = at;
+      if (oldStatus !== "ACTIVE") {
+        m.lastMembershipChangeAt = at;
+        membershipEvent(u.id, t.destinationId, oldStatus === "CANCELLED" ? "REJOINED" : "FIRST_VERIFIED", oldStatus, "ACTIVE", "task_verify", "member", t.id);
+      }
+      scheduleMembershipCheck(m, Date.now() + memRecheckDelay());
+    }
+    db.verifyLog.push({ ownerId: o.userId, title: t.destinationTitle, platform: t.platform, source: self ? "self" : "verified", at: Date.now(), ...(CURRENT_OP ? { opId: CURRENT_OP } : {}) });
+    if (db.verifyLog.length > 5e4) db.verifyLog.splice(0, 1e4);
+    // 5) Jurnaldagi yakuniy balans — yozuvdan keyingi haqiqiy qiymat.
+    db.transactions[db.transactions.length - 1].balanceAfter = u.credits.available;
+    checkOrderComplete(o);
+    return reward;
+  } catch (e) {
+    // Atomarlik: yarimta natija qolmaydi — jurnal va barcha hisoblagichlar
+    // chaqiruvdan oldingi holatga qaytariladi.
+    db.transactions.length = snap.len.tx;
+    db.verifyLog.length = snap.len.log;
+    db.membershipEvents.length = snap.len.ev;
+    db.verificationJobs.length = snap.len.job;
+    db.memberships.length = snap.len.mem;
+    Object.assign(t, snap.task);
+    Object.assign(o, snap.order);
+    Object.assign(u.credits, { available: snap.user.available, reserved: snap.user.reserved, spent: snap.user.spent, verifiedRewards: snap.user.verifiedRewards, selfReportedRewards: snap.user.selfReportedRewards });
+    u.completedTasksCount = snap.user.completedTasksCount;
+    u.activeOrdersCount = snap.user.activeOrdersCount;
+    if (snap.dest && dest) Object.assign(dest, snap.dest);
+    if (snap.mem && memBefore) Object.assign(memBefore, snap.mem);
+    console.error(`applyVerified qaytarildi (${t.id}):`, e && e.message || e);
+    return 0;
+  } finally {
+    APPLYING_TASKS.delete(t.id);
   }
-  db.verifyLog.push({ ownerId: o.userId, title: t.destinationTitle, platform: t.platform, at: Date.now() });
-  if (db.verifyLog.length > 5e4) db.verifyLog.splice(0, 1e4);
-  checkOrderComplete(o);
-  return reward;
 }
-function tryQualifyReferral(u) {
+// `opts.defer` berilsa bildirishnoma darhol yuborilmaydi, massivga yig'iladi —
+// pul amali bazaga yozilgandan keyingina yuboriladi (rollback bo'lsa yo'q).
+async function qualifyReferralCore(u, opts) {
   const ref = db.referrals.find((r) => r.referredUserId === u.id);
   if (!ref) return;
+  if (ref.bonusIssued) return; // bonus faqat BIR marta
+  if (ref.referrerId === u.id) return; // o'zini referal qilish taqiqlanadi
+  const referrer = userById(ref.referrerId);
+  if (!referrer || referrer.status === "blocked") return;
   ref.hasCompletedTask = true;
   ref.isVerified = true;
   ref.verifiedAt ||= nowStr();
   const q = qualifyReferral(ref, true, S().creditRewardReferral);
   if (!q.isEligible) return;
-  const referrer = userById(ref.referrerId);
-  if (!referrer) return;
-  ref.bonusAmount = q.rewardCredits;
-  u.isReferralVerified = true;
-  // Spec §12: bonus foydalanuvchi tanlagan kanaliga yo'naltiriladi.
-  const chs = channelsOf(referrer);
-  if (!chs.length) {
-    referrer.pendingRefBonus = (referrer.pendingRefBonus || 0) + q.rewardCredits;
-    save();
-    if (notifOn(referrer, "referrals")) notify(referrer, `\u{1F465} Do‘stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!\n\n\u{1F381} <b>${q.rewardCredits} kredit</b> referal bonusi tayyor. Uni kanalingizga yo‘naltirish uchun avval kanal ulang (\u201C\u{1F4E2} Kanallarim\u201D \u2192 \u201C\u2795 Kanal qo‘shish\u201D), so‘ng \u201C\u{1F465} Referal tizimi\u201D bo‘limiga kiring.`);
-    return;
+  // Malakali referal = TASDIQLANGAN Telegram obunasi (applyVerified orqali kelgan
+  // reward). `SELF_CONFIRMED`/Instagram yo'li bu funksiyani chaqirmaydi.
+  const amount = Math.max(0, Number(q.rewardCredits) || 0);
+  // Alohida chaqiruvda o'z operatsiyamiz; `noSave` bo'lsa chaqiruvchining op'i.
+  const endOp = opts && opts.noSave ? null : opStart("ref");
+  const snap = creditsSnapshot(referrer);
+  const refBefore = { bonusAmount: ref.bonusAmount, bonusIssued: ref.bonusIssued, awaitingChoice: ref.awaitingChoice, paidAt: ref.paidAt };
+  if (amount > 0) {
+    const before = Number(referrer.credits.available) || 0;
+    // `REFERRAL_REWARD` — bitta umumiy hamyonga tushadigan oddiy kirim yozuvi.
+    // Idempotency kaliti takroriy to'lovni to'liq yopadi.
+    if (!addTx(referrer, amount, "REFERRAL_REWARD", `Referal bonusi: ${u.displayName}`, { idempotencyKey: `refreward:${ref.id}`, referralId: ref.id })) return;
+    referrer.credits.available = before + amount;
+    db.transactions[db.transactions.length - 1].balanceAfter = referrer.credits.available;
   }
-  referrer.pendingRefBonus = (referrer.pendingRefBonus || 0) + q.rewardCredits;
-  ref.awaitingChoice = true;
-  const buttons = chs.slice(0, 8).map((c) => [{ text: `\u{1F4E2} ${c.title}`.slice(0, 40), callback_data: `refa:${ref.id}|${c.id}` }]);
-  if (notifOn(referrer, "referrals")) notify(referrer, `\u{1F465} Do‘stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!\n\n\u{1F381} <b>${q.rewardCredits} kredit</b> referal bonusi tayyor. Qaysi kanalingizga yo‘naltiramiz?`, { reply_markup: { inline_keyboard: buttons } });
-  save();
+  ref.bonusAmount = amount;
+  ref.bonusIssued = true;
+  ref.awaitingChoice = false;
+  ref.paidAt = nowStr();
+  u.isReferralVerified = true;
+  // Pul amali — bildirishnomadan OLDIN saqlanadi; saqlanmasa hammasi qaytariladi.
+  // `opts.noSave` — chaqiruvchi (verifyBatch / TASK_CHECK) hammasini bitta
+  // atomar yozuvda saqlaydi, shu bilan oraliq yozuv va drift bo'lmaydi.
+  if (!(opts && opts.noSave)) {
+    if (endOp) endOp();
+    if (!(await flushOrRollback(() => {
+      creditsRestore(referrer, snap);
+      Object.assign(ref, refBefore);
+      u.isReferralVerified = false;
+    }))) return;
+  }
+  const sendNotice = () => {
+    if (notifOn(referrer, "referrals"))
+      notify(referrer, `\u{1F465} Do‘stingiz <b>${esc(u.displayName)}</b> birinchi vazifasini bajardi!\n\n\u{1F381} <b>${amount} kredit</b> referal bonusi hisobingizga qo‘shildi. Hozirgi balans: <b>${referrer.credits.available}</b> kredit.`);
+  };
+  if (opts && Array.isArray(opts.defer)) opts.defer.push(sendNotice);
+  else sendNotice();
+}
+// Referal malakasi + yagona 300 kredit. `noSave` berilsa chaqiruvchi
+// tranzaksiyasi ichida ishlaydi; aks holda O'ZI instanslararo qulf ostida
+// bajariladi — ikki instans bir vaqtda malakani tekshirsa ham `bonusIssued`
+// va `refreward:<id>` idempotency kaliti ikkinchi to'lovni to'sadi.
+async function tryQualifyReferral(u, opts) {
+  if (opts && opts.noSave) return qualifyReferralCore(u, opts);
+  const res = await withStateTx(() => qualifyReferralCore(u, opts));
+  if (!res.ok) console.error(`referal mukofoti bajarilmadi (${u && u.id}, ${res.reason})`);
+  return res.ok ? res.value : undefined;
 }
 // Referal bonusini tanlangan kanalga obunachi navbati sifatida yo'naltiradi.
 function allocateRefBonus(referrer, ref, ch) {
@@ -1400,20 +2615,133 @@ function allocateRefBonus(referrer, ref, ch) {
   save();
   return { units, order: o, amount };
 }
+// Tasdiqlash + mukofot + referal — BITTA saqlash birligi. Saqlash yiqilsa
+// hamma o'zgarish qaytariladi: aks holda keyingi aloqasiz `save()` bu
+// tasdiqlanmagan mukofotni bazaga yozib yuborardi (balans va ledger birga
+// o'zgarib, foydalanuvchi esa "saqlanmadi" xabarini olgan bo'lardi).
+function verifyRollbackSnapshot(u, batch, op) {
+  const taskIds = [...new Set((batch || []).map((t) => t.id))];
+  const orderIds = [...new Set((batch || []).map((t) => t.orderId).filter(Boolean))];
+  const destIds = [...new Set((batch || []).map((t) => t.destinationId).filter(Boolean))];
+  const ref = db.referrals.find((r) => r.referredUserId === u.id) || null;
+  const referrer = ref ? userById(ref.referrerId) : null;
+  return {
+    op: op || CURRENT_OP,
+    user: deepCopy(u),
+    referrerId: referrer ? referrer.id : "",
+    referrer: referrer ? deepCopy(referrer) : null,
+    tasks: taskIds.map((id) => [id, deepCopy(db.tasks.find((t) => t.id === id))]).filter((x) => x[1]),
+    orders: orderIds.map((id) => [id, deepCopy(db.orders.find((o) => o.id === id))]).filter((x) => x[1]),
+    dests: destIds.map((id) => [id, deepCopy(destOf(id))]).filter((x) => x[1]),
+    refId: ref ? ref.id : "",
+    ref: ref ? deepCopy(ref) : null,
+    // Bu operatsiya tegishi mumkin bo'lgan joblar (obyekt sifatida tiklanadi).
+    jobs: db.verificationJobs
+      .filter((j) => taskIds.includes(j.taskId) || (ref && j.userId === u.id))
+      .map((j) => [j.id, deepCopy(j)]),
+    len: { tx: db.transactions.length, ev: db.membershipEvents.length, log: db.verifyLog.length }
+  };
+}
+function verifyRollbackApply(snap, u) {
+  if (!snap) return;
+  if (u) restoreInto(u, snap.user);
+  if (snap.ref && snap.referrer) {
+    const r = userById(snap.referrerId);
+    if (r) restoreInto(r, snap.referrer);
+  }
+  for (const [id, v] of snap.tasks) {
+    const t = db.tasks.find((x) => x.id === id);
+    if (t) restoreInto(t, v);
+  }
+  for (const [id, v] of snap.orders) {
+    const o = db.orders.find((x) => x.id === id);
+    if (o) restoreInto(o, v);
+  }
+  for (const [id, v] of snap.dests) {
+    const d = destOf(id);
+    if (d) restoreInto(d, v);
+  }
+  if (snap.ref) {
+    const ref = db.referrals.find((r) => r.id === snap.refId);
+    if (ref) restoreInto(ref, snap.ref);
+  }
+  // Faqat SHU operatsiya yaratgan yozuvlar olib tashlanadi — boshqa handler
+  // persist kutish paytida yozgan yozuvlar saqlanib qoladi.
+  db.orders = dropOpRows(db.orders, snap, 0);
+  db.verificationJobs = dropOpRows(db.verificationJobs, snap, 0);
+  db.memberships = dropOpRows(db.memberships, snap, 0);
+  db.transactions = dropOpRows(db.transactions, snap, snap.len.tx);
+  db.membershipEvents = dropOpRows(db.membershipEvents, snap, snap.len.ev);
+  db.verifyLog = dropOpRows(db.verifyLog, snap, snap.len.log);
+  if (snap.jobs) {
+    for (const [id, v] of snap.jobs) {
+      const j = db.verificationJobs.find((x) => x.id === id);
+      if (j) restoreInto(j, v);
+    }
+  }
+}
 async function verifyBatch(u, platform, chat) {
-  const batch = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status)).sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
+  // CHECK_ERROR vazifa foydalanuvchi tugmasi bilan QAYTA ishlanmaydi: uni faqat
+  // doimiy TASK_CHECK jobi tekshiradi (spec §2). Shu tufayli job va tugma bir
+  // vazifa uchun bir vaqtda ishlamaydi — dublikat reward yo'li yopiladi.
+  const batch = db.tasks.filter((t) => t.assignedTo === u.id && t.platform === platform && OPEN.has(t.status) && t.status !== "CHECK_ERROR").sort((a, b) => a.queueSequence - b.queueSequence).slice(0, 10);
   if (!batch.length) return send(chat, T(u, "verify_none"), menuFor(u));
+  // Saqlash yiqilsa shu holatga qaytamiz (rollback snapshot). Operatsiya ID
+  // oldindan yaratiladi: tarmoq fazasida u SET QILINMAYDI (boshqa handlerlar
+  // yozuvlari bizning op bilan belgilanib qolmasligi uchun).
+  const opV = newOpId("vb");
+  const refNotices = [];
   const lookup = {};
+  let retriesSaved = 0;
+  let firstRetryDelayMs = 0;
   if (platform === "telegram") {
-    await Promise.all(batch.map(async (t) => {
+    // Har bir vazifa MUSTAQIL tekshiriladi: bittasining yiqilishi qolgan
+    // to'qqiztasini to'xtatmaydi (spec §5). Bir vaqtda ko'pi bilan
+    // VERIFY_CONCURRENCY ta so'rov — Telegram'ni parallel so'rov bilan
+    // bosib ketmaymiz (spec §4).
+    const results = await mapLimit(batch, VERIFY_CONCURRENCY, async (t) => {
       const dest = destOf(t.destinationId);
-      const r = dest ? await checkMember(dest.channelId, u.telegramId) : "error";
-      lookup[t.id] = { verified: r === "member", isApiError: r === "error" };
-    }));
+      const ctx = { taskId: t.id, orderId: t.orderId, channelDbId: dest ? dest.id : "", stage: "task_verify" };
+      if (!dest || !dest.channelId) {
+        return { verified: false, isApiError: true, transient: false, reason: "channel_missing", diag: null };
+      }
+      try {
+        const r = await checkMemberInfo(dest.channelId, u.telegramId, ctx);
+        return {
+          verified: r.result === "member",
+          isApiError: r.result === "error",
+          transient: !!r.transient,
+          retryAfter: Number(r.retryAfter) || 0,
+          reason: r.reason || TG_ERR.UNKNOWN,
+          diag: r.diag || null
+        };
+      } catch (e) {
+        // Kutilmagan istisno ham faqat shu vazifaga tegishli bo'lib qoladi.
+        const diag = recordVerifyFailure(tgDiag(
+          { description: String(e && e.message || e), error_code: 0, errKind: TG_ERR.UNKNOWN, transient: true },
+          "getChatMember",
+          { chatId: dest.channelId, userId: u.telegramId, ...ctx }
+        ));
+        return { verified: false, isApiError: true, transient: true, retryAfter: 0, reason: TG_ERR.UNKNOWN, diag };
+      }
+    });
+    batch.forEach((t, i) => (lookup[t.id] = results[i]));
   } else {
     for (const t of batch) lookup[t.id] = { verified: Date.now() - Date.parse(t.createdAt) > 15e3 };
   }
-  const out = processTaskBatchVerification(batch, lookup);
+  let out = null;
+  let earned = 0;
+  let auto = null;
+  let vbSaved = true;
+  let snapV = null;
+  // Tarmoq fazasi tugadi — endi INSTANSLARARO qulf ostida FAQAT sinxron
+  // mutatsiya va atomik yozuv. Holat qayta o'qiladi, shuning uchun boshqa
+  // instans yozgan mukofot yo'qolmaydi va takroriy mukofot berilmaydi.
+  const vbRes = await withStateTx(async () => {
+  snapV = verifyRollbackSnapshot(u, batch, opV);
+  out = processTaskBatchVerification(batch, lookup);
+  // Operatsiya ID shu sinxron blokni belgilaydi (rollback faqat shu yozuvlarni oladi).
+  const endOp = opSet(opV);
   // Har bir tekshiruv natijasi alohida saqlanadi (spec §3-A, 4-qadam).
   const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
   for (const t of batch) {
@@ -1423,15 +2751,39 @@ async function verifyBatch(u, platform, chat) {
     real.lastCheckResult = res.isApiError ? "error" : res.verified ? "member" : "not_member";
     real.checkedAt = checkedAt;
     if (res.isApiError) {
-      // Texnik xato — obunadan chiqish emas; backoff bilan qayta uriniladi.
       real.consecutiveCheckErrors = (real.consecutiveCheckErrors || 0) + 1;
-      real.retryAt = new Date(Date.now() + Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, real.consecutiveCheckErrors)))).toISOString();
+      real.lastCheckReason = res.reason || TG_ERR.UNKNOWN;
+      // Haqiqiy Telegram javobi saqlanadi — umumiy matn bilan almashtirilmaydi.
+      if (res.diag) {
+        real.lastCheckError = {
+          errorCode: res.diag.errorCode,
+          description: res.diag.description,
+          httpStatus: res.diag.httpStatus,
+          retryAfter: res.diag.retryAfter,
+          errKind: res.diag.errKind,
+          at: res.diag.ts
+        };
+      }
+      const delay = retryDelayMs(real.consecutiveCheckErrors, res.retryAfter || 0);
+      real.retryAt = new Date(Date.now() + delay).toISOString();
+      // Vaqtinchalik xato — doimiy navbatga yozamiz (restartdan keyin qoladi).
+      if (res.transient) {
+        if (scheduleTaskCheck(real, Date.now() + delay)) retriesSaved++;
+        if (!firstRetryDelayMs) firstRetryDelayMs = delay;
+      }
+      // Doimiy xato (bot admin emas / kanal yo'q) — kanal holatini yangilaymiz.
+      if (!res.transient && (res.reason === TG_ERR.NO_RIGHTS || res.reason === TG_ERR.NOT_FOUND || res.reason === "channel_missing")) {
+        const dest = destOf(real.destinationId);
+        if (dest && dest.channelId) markChannelPermissionLost(dest, res.reason);
+      }
     } else {
       real.consecutiveCheckErrors = 0;
       real.retryAt = "";
+      real.lastCheckError = null;
+      cancelTaskCheck(real.id);
     }
   }
-  let earned = 0, firstTg = false;
+  let firstTg = false;
   for (const vt of out.verifiedTasks) {
     const real = db.tasks.find((x) => x.id === vt.id);
     const got = applyVerified(u, real);
@@ -1443,13 +2795,54 @@ async function verifyBatch(u, platform, chat) {
   const deferred = buildFifoQueueWithDeferred([], out.deferredTasks, []);
   for (const d of deferred) {
     const real = db.tasks.find((x) => x.id === d.id);
+    if (!real) continue;
+    // Vaqtinchalik xato olgan vazifa FIFO navbatiga qaytarilmaydi va
+    // foydalanuvchiga qayta ko'rsatilmaydi — uni TASK_CHECK jobi tekshiradi.
+    if (d.status === "CHECK_ERROR") {
+      real.status = "CHECK_ERROR";
+      real.isDeferred = false;
+      continue;
+    }
+    const dst = destOf(real.destinationId);
+    // Kanal yaroqsiz bo'lsa (huquq yo'qolgan / uzilgan) vazifa navbatga qaytmaydi.
+    if (!dst || dst.disconnectedAt || (dst.status && dst.status !== "active")) {
+      real.status = "CANCELLED";
+      real.cancelReason = "channel_unavailable";
+      continue;
+    }
     real.status = d.status;
     real.isDeferred = true;
     real.checkedAt = (/* @__PURE__ */ new Date()).toISOString();
   }
-  if (firstTg) tryQualifyReferral(u);
-  const auto = autoOrderFromBalance(u);
-  save();
+  // Referal bildirishnomasi saqlash TASDIQLANGANDAN keyin yuboriladi;
+  // saqlashni bu funksiya emas, `verifyBatch()` bajaradi (bitta atomar birlik).
+  if (firstTg) await tryQualifyReferral(u, { defer: refNotices, noSave: true });
+  auto = autoOrderFromBalance(u);
+  endOp();
+  // Pul amali bajarildi — xabardan OLDIN atomik saqlaymiz (crash-safety §6):
+  // 500 ms debounce oynasida jarayon o'lsa, foydalanuvchi ko'rgan mukofot
+  // yo'qolmasligi kerak.
+  if (earned > 0 || auto) {
+    // Postgres rejimida yozuv HAQIQATAN bajarilishini kutamiz. Yiqilsa hamma
+    // o'zgarish (mukofot, task, order, referal, avtobuyurtma) QAYTARILADI —
+    // keyingi aloqasiz `save()` bu tasdiqlanmagan mukofotni yozib yubormaydi.
+    // Saqlash + rollback qulf ostida: oraga boshqa yozuv kirmaydi.
+    const saved = await withSaveLock(async () => {
+      if (await flushSaveAwaited()) return true;
+      verifyRollbackApply(snapV, u);
+      return false;
+    });
+    if (!saved) vbSaved = false;
+  } else save();
+  });
+  // Qulf olinmasa, holat o'qilmasa yoki yozuv yiqilsa — yolg'on muvaffaqiyat
+  // xabari YO'Q va xotiradagi o'zgarishlar qaytariladi.
+  if (!vbRes.ok || !vbSaved) {
+    if (!vbSaved) verifyRollbackApply(snapV, u);
+    console.error("verifyBatch: saqlanmadi — tasdiqlash va mukofot qaytarildi");
+    return send(chat, T(u, "save_err"), menuFor(u));
+  }
+  for (const n of refNotices) n();
   const notDone = out.deferredTasks.filter((t) => t.status === "PENDING");
   let text = T(u, "verify_ok", { ok: out.verifiedTasks.length, reward: earned, bal: u.credits.available });
   if (auto && auto.cost > 0) text += T(u, "auto_order_note", { qty: auto.qty, title: esc(auto.channel.title) });
@@ -1459,9 +2852,32 @@ async function verifyBatch(u, platform, chat) {
 ` + notDone.map((t) => `• ${esc(t.destinationTitle)}`).join("\n") + `
 
 Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
-  if (out.apiErrorTasks.length) text += `
-
-⚠️ ${out.apiErrorTasks.length} ta kanalni hozir tekshirib bo‘lmadi (Telegram’ning o‘zida xato). Sizda ayb yo‘q — keyinroq o‘zi qayta tekshiriladi.`;
+  // Texnik xato va kanal muammosi ALOHIDA ko'rsatiladi: ikkalasi bir xil xabar
+  // bo'lsa, foydalanuvchi "Telegram buzuq" deb o'ylab qolardi.
+  const permTasks = out.apiErrorTasks.filter((t) => {
+    const l = lookup[t.id];
+    return l && !l.transient;
+  });
+  const tempTasks = out.apiErrorTasks.filter((t) => {
+    const l = lookup[t.id];
+    return l && l.transient;
+  });
+  const permErr = permTasks.length;
+  const tempErr = tempTasks.length;
+  const reasonOf = (list) => {
+    const first = list.map((t) => (lookup[t.id] || {}).reason).find(Boolean);
+    return verifyReasonText(u, first);
+  };
+  if (permErr) text += T(u, "verify_perm_err", { n: permErr, reason: reasonOf(permTasks) });
+  if (tempErr) {
+    // "Qayta tekshiruv rejalashtirildi" deb faqat navbatga haqiqiy yozuv
+    // tushgan bo'lsa aytamiz (spec §6).
+    if (retriesSaved >= tempErr) {
+      text += T(u, "verify_retry_saved", { n: tempErr, reason: reasonOf(tempTasks), mins: Math.max(1, Math.round(firstRetryDelayMs / 6e4)) });
+    } else {
+      text += T(u, "verify_temp_err", { n: tempErr, reason: reasonOf(tempTasks) });
+    }
+  }
   await send(chat, text, menuFor(u));
   if (!notDone.length && !out.apiErrorTasks.length) await showTasks(u, platform, chat);
 }
@@ -1472,7 +2888,8 @@ async function showTasks(u, platform, chat, next) {
   if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
   // Bo‘sh turgan kreditni avtomatik buyurtmaga aylantiramiz (navbat to‘lishi uchun).
-  autoOrderFromBalance(u);
+  // Balansni band qilish — pul amali: instanslararo qulf ostida.
+  await withStateTx(() => autoOrderFromBalance(u));
   const batch = next ? getNextBatch(u, platform) : getBatch(u, platform);
   const supply = taskSupply(u, platform);
   if (!batch.length) {
@@ -1521,7 +2938,8 @@ async function showChannelDetail(u, ch, chat) {
   const hist = os.length
     ? os.map((o) => `• ${o.requestedQuantity} — ${o.verifiedQuantity} • ${o.status === "active" ? "🟢" : o.status === "completed" ? "✅" : "⛔"}`).join("\n")
     : "—";
-  const text = T(u, "ch_detail", {
+  const warn = ch.status === "permission_lost" || ch.botHasAdminRights === false ? T(u, "ch_lost_warn") : "";
+  const text = (warn ? warn + "\n\n" : "") + T(u, "ch_detail", {
     title: esc(ch.title),
     username: esc(ch.username),
     cid: esc(ch.channelId),
@@ -1605,6 +3023,7 @@ async function showHelp(u, chat) {
     [{ text: "📝", callback_data: "cmp:new" }]
   ]));
 }
+var LANG_LABEL = { uz: "\u{1F1FA}\u{1F1FF} O\u2018zbekcha", ru: "\u{1F1F7}\u{1F1FA} \u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "\u{1F1EC}\u{1F1E7} English" };
 async function showSettings(u, chat) {
   const mark = (ok) => (ok ? "\u2705" : "\u26D4");
   const langName = { uz: "\u{1F1FA}\u{1F1FF} O\u2018zbekcha", ru: "\u{1F1F7}\u{1F1FA} \u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "\u{1F1EC}\u{1F1E7} English" }[langOf(u)];
@@ -1621,13 +3040,61 @@ async function showSettings(u, chat) {
     tech: mark(notifOn(u, "technical"))
   }), inline([
     [{ text: "\u{1F1FA}\u{1F1FF} O\u2018zbekcha", callback_data: "lang:uz" }, { text: "\u{1F1F7}\u{1F1FA} \u0420\u0443\u0441\u0441\u043a\u0438\u0439", callback_data: "lang:ru" }, { text: "\u{1F1EC}\u{1F1E7} English", callback_data: "lang:en" }],
-    [{ text: (u.notifications ? T(u, "set_hourly_on") : T(u, "set_hourly_off")) + " \u2014 " + (u.notifications ? "\u2705" : "\u26D4"), callback_data: "notif" }],
-    [{ text: T(u, "b_tasks") + " " + mark(notifOn(u, "subscribers")), callback_data: "nt:subscribers" }, { text: T(u, "b_referrals") + " " + mark(notifOn(u, "referrals")), callback_data: "nt:referrals" }],
-    [{ text: T(u, "b_orders") + " " + mark(notifOn(u, "orders")), callback_data: "nt:orders" }, { text: "\u{1F6E0} " + mark(notifOn(u, "technical")), callback_data: "nt:technical" }],
-    [{ text: T(u, "set_all_on"), callback_data: "ntall:on" }, { text: T(u, "set_all_off"), callback_data: "ntall:off" }],
+    [{ text: T(u, "set_notif_btn"), callback_data: "setnotif" }],
+    [{ text: T(u, "set_security_btn"), callback_data: "setsec" }, { text: T(u, "set_accounts_btn"), callback_data: "setacc" }],
     [{ text: T(u, "set_rates_btn"), callback_data: "setrates" }, { text: T(u, "set_info_btn"), callback_data: "setinfo" }],
-    [{ text: T(u, "set_support_btn"), callback_data: "setsupport" }, { text: T(u, "my_tickets_btn"), callback_data: "setmyt" }]
+    [{ text: T(u, "set_support_btn"), callback_data: "setsupport" }, { text: T(u, "my_tickets_btn"), callback_data: "setmyt" }],
+    [{ text: T(u, "set_back"), callback_data: "settings" }, { text: T(u, "set_main_btn"), callback_data: "setmain" }]
   ]));
+}
+async function showNotifications(u, chat) {
+  const mark = (ok) => (ok ? "\u2705" : "\u26D4");
+  return send(chat, T(u, "set_notif_title", {
+    sub: mark(notifOn(u, "subscribers")),
+    ref: mark(notifOn(u, "referrals")),
+    ord: mark(notifOn(u, "orders")),
+    tech: mark(notifOn(u, "technical")),
+    hourly: u.notifications ? "\u2705" : "\u26D4"
+  }), inline([
+    [{ text: T(u, "nt_sub") + " " + mark(notifOn(u, "subscribers")), callback_data: "nt:subscribers" }, { text: T(u, "nt_ref") + " " + mark(notifOn(u, "referrals")), callback_data: "nt:referrals" }],
+    [{ text: T(u, "nt_ord") + " " + mark(notifOn(u, "orders")), callback_data: "nt:orders" }, { text: T(u, "nt_tech") + " " + mark(notifOn(u, "technical")), callback_data: "nt:technical" }],
+    [{ text: (u.notifications ? T(u, "set_hourly_on") : T(u, "set_hourly_off")) + " \u2014 " + (u.notifications ? "\u2705" : "\u26D4"), callback_data: "notif" }],
+    [{ text: T(u, "set_all_on"), callback_data: "ntall:on" }, { text: T(u, "set_all_off"), callback_data: "ntall:off" }],
+    [{ text: T(u, "set_back"), callback_data: "settings" }]
+  ]));
+}
+async function showSecurity(u, chat) {
+  return send(chat, T(u, "set_sec_title", {
+    id: u.telegramId,
+    status: u.status === "blocked" ? T(u, "st_blocked") : T(u, "st_active"),
+    last: esc(u.lastSeenAt || u.registeredAt || "\u2014")
+  }), inline([
+    [{ text: T(u, "sec_report_btn"), callback_data: "secrep" }],
+    [{ text: T(u, "set_info_btn"), callback_data: "setinfo" }],
+    [{ text: T(u, "set_back"), callback_data: "settings" }, { text: T(u, "set_main_btn"), callback_data: "setmain" }]
+  ]));
+}
+async function showAccounts(u, chat) {
+  const chs = channelsOf(u);
+  const list = chs.length
+    ? chs.map((c) => T(u, "acc_ch_line", {
+        title: esc(c.title),
+        username: esc(c.username),
+        role: c.ownerId === u.id ? T(u, "acc_role_owner") : T(u, "acc_role_ctl"),
+        bot: c.botHasAdminRights === false || c.status === "permission_lost" ? T(u, "acc_bot_no") : T(u, "acc_bot_ok")
+      })).join("\n")
+    : T(u, "acc_none");
+  const rows = chs.slice(0, 6).map((c) => [{ text: `\u{1F4E2} ${c.title}`.slice(0, 32), callback_data: `chd:${c.id}` }]);
+  rows.push([{ text: T(u, "ch_add"), callback_data: "chadd" }, { text: T(u, "b_channels"), callback_data: "chs:0" }]);
+  rows.push([{ text: T(u, "set_back"), callback_data: "settings" }, { text: T(u, "set_main_btn"), callback_data: "setmain" }]);
+  return send(chat, T(u, "set_acc_title", {
+    id: u.telegramId,
+    username: u.username ? "@" + esc(u.username) : "\u2014",
+    name: esc(u.displayName || ""),
+    lang: LANG_LABEL[langOf(u)],
+    n: chs.length,
+    list
+  }), inline(rows));
 }
 async function showMyTickets(u, chat) {
   const list = db.complaints.filter((c) => c.userId === u.id).slice(-8).reverse();
@@ -1729,6 +3196,8 @@ async function sponsorGate(u, chat) {
 async function prepareOrder(u, destId, qty, chat) {
   const dest = destOf(destId);
   if (!dest) return send(chat, T(u, "choose_menu"), menuFor(u));
+  // Manzil holati tekshiriladi: uzilgan yoki pauza qilingan kanalga buyurtma yo'q.
+  if (dest.disconnectedAt || dest.status === "paused") return send(chat, TR(u, "\u23F8 Bu kanal vaqtincha to\u2018xtatilgan \u2014 yangi buyurtma qabul qilinmaydi."), menuFor(u));
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
   if (S().areOrdersFrozen) return send(chat, T(u, "frozen"), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
@@ -1739,7 +3208,31 @@ async function prepareOrder(u, destId, qty, chat) {
     u.state = null;
     return send(chat, T(u, "ord_short", { need: chk.totalCost, have: u.credits.available, lack: chk.shortage }), menuFor(u));
   }
-  u.state = { type: "order_confirm", destId, qty, platform, unit };
+  // `client_token` — MAJBURIY: buyurtma faqat shu kalit bilan yaratiladi va
+  // kalit foydalanuvchi + manzil + miqdorga bog'lanadi (spec B).
+  const token = crypto.randomBytes(8).toString("hex");
+  if (!db.orderTokens) db.orderTokens = {};
+  // Oldingi tasdiqlash kaliti bekor qilinadi: har bir tayyorlash yangi kalit
+  // beradi, eski tugma esa buyurtma yarata olmaydi.
+  const prev = u.state && u.state.token;
+  if (prev && db.orderTokens[prev] && !db.orderTokens[prev].orderId && !db.orderTokens[prev].inflight) delete db.orderTokens[prev];
+  db.orderTokens[token] = {
+    token,
+    userId: u.id,
+    destId,
+    qty,
+    platform,
+    createdAt: nowStr(),
+    claimedAt: "",
+    releasedAt: "",
+    inflight: false,
+    orderId: ""
+  };
+  // Faqat hajm uchun: ishlatilmoqda bo'lmagan juda eski tokenlar tozalanadi
+  // (yaratilgan buyurtmalar va tarix tegilmaydi).
+  const tks = Object.keys(db.orderTokens);
+  if (tks.length > 500) for (const k of tks.slice(0, tks.length - 500)) if (!db.orderTokens[k].inflight) delete db.orderTokens[k];
+  u.state = { type: "order_confirm", destId, qty, platform, unit, token };
   const title = esc(platform === "telegram" ? dest.title : "@" + dest.username);
   return send(chat, T(u, "ord_summary", {
     title,
@@ -1748,25 +3241,155 @@ async function prepareOrder(u, destId, qty, chat) {
     total: chk.totalCost,
     left: u.credits.available - chk.totalCost
   }), inline([
-    [{ text: T(u, "ord_yes"), callback_data: "ordok:1" }, { text: T(u, "ord_no"), callback_data: "ordno:0" }]
+    [{ text: T(u, "ord_yes"), callback_data: `ordok:${token}` }, { text: T(u, "ord_no"), callback_data: "ordno:0" }]
   ]));
 }
-async function createOrderConfirmed(u, destId, qty, chat) {
+// Token tekshiruvi va "band qilish" — bitta SINXRON blok (await yo'q). Shu
+// tufayli parallel 20 ta so'rovdan faqat bittasi buyurtma yaratadi.
+function claimOrderToken(u, destId, qty, token) {
+  const tk = String(token || "");
+  if (!/^[0-9a-f]{16}$/.test(tk)) return { ok: false, text: "ord_token_missing" };
+  if (!db.orderTokens || !db.orderTokens[tk]) return { ok: false, text: "ord_token_missing" };
+  const rec = db.orderTokens[tk];
+  if (rec.userId !== u.id) return { ok: false, text: "ord_token_missing" };
+  if (rec.destId !== destId || Number(rec.qty) !== Number(qty)) return { ok: false, text: "ord_token_missing" };
+  if (rec.orderId) {
+    const o = db.orders.find((x) => x.id === rec.orderId);
+    if (o) return { ok: true, order: o, rec };
+    return { ok: false, text: "ord_token_missing" };
+  }
+  // `inflight` — jarayon ichida band (o'z instansimiz) yoki BOSHQA instansning
+  // 60 sekundlik lease'i. Boshqasining lease'i eskirmagan bo'lsa, biz hech
+  // narsa band qilmaymiz (parallel ikkinchi reservation yaratilmasin).
+  if (rec.inflight) {
+    const mine = rec.claimBy === INSTANCE_ID;
+    const fresh = Date.now() - (Number(rec.claimedAtMs) || 0) < 60000;
+    if (mine || fresh) return { ok: false, text: "ord_inflight", rec };
+  }
+  rec.inflight = true;
+  rec.claimBy = INSTANCE_ID;
+  rec.claimedAtMs = Date.now();
+  rec.claimedAt = nowStr();
+  return { ok: true, rec };
+}
+async function createOrderConfirmed(u, destId, qty, chat, token) {
+  // Token tekshiruvi va band qilish — INSTANSLARARO qulf ostida, eng so'nggi
+  // holat bo'yicha. Bir xil `client_token` bilan ikkinchi instans kelsa,
+  // u mavjud buyurtmani ko'radi (yangi reservation YO'Q).
+  const claim = await withStateTx(() => claimOrderToken(u, destId, qty, token));
+  const g = claim.ok ? claim.value : { ok: false, text: "save_err" };
+  if (!g.ok) return send(chat, T(u, g.text || "ord_token_missing"), menuFor(u));
+  if (g.order) {
+    u.state = null;
+    save();
+    return send(chat, T(u, "ord_created", { title: esc(g.order.destinationTitle), qty: g.order.requestedQuantity, total: g.order.totalCost }), menuFor(u));
+  }
+  let created = false;
+  try {
+    await createOrderConfirmedInner(u, destId, qty, chat, g.rec);
+    created = !!g.rec.orderId;
+  } finally {
+    // Faqat O'Z lease'imizni bo'shatamiz — boshqa instansning bandligini
+    // xotirada o'chirib, unga parallel reservation yo'lini ochmaymiz.
+    if (!g.rec.claimBy || g.rec.claimBy === INSTANCE_ID) {
+      g.rec.inflight = false;
+      g.rec.claimBy = "";
+    }
+    if (!created) g.rec.releasedAt = nowStr();
+    save();
+  }
+}
+async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
   const dest = destOf(destId);
   if (!dest) return send(chat, "Manzil topilmadi.", menuFor(u));
+  if (dest.disconnectedAt || dest.status === "paused") {
+    u.state = null;
+    return send(chat, TR(u, "\u23F8 Bu kanal vaqtincha to\u2018xtatilgan \u2014 yangi buyurtma qabul qilinmaydi."), menuFor(u));
+  }
   const platform = destId.startsWith("ig-") ? "instagram" : "telegram";
   if (S().areOrdersFrozen) return send(chat, TR(u, "\u{1F9CA} Buyurtmalar vaqtincha muzlatilgan."), menuFor(u));
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, "\u{1F4F8} Instagram moduli o\u2018chirilgan.", menuFor(u));
   if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, TR(u, "Son 10 dan 10 000 gacha bo\u2018lishi kerak. Qaytadan yozing:"));
+  // Buyurtma yaratishdan OLDIN kanal holati va bot huquqi qayta tekshiriladi
+  // (spec §1.8). Kredit faqat tekshiruvdan keyin band qilinadi.
+  if (platform === "telegram" && dest.channelId) {
+    // Barcha yoqilgan botlar (asosiy + ishchi) tekshiriladi: istalgan bot
+    // obunani tekshirishi mumkin, shuning uchun huquqi yo'q bot bo'lsa
+    // buyurtma yaratilmaydi va kredit band qilinmaydi.
+    const perms = await inspectAllBotsAdmin(dest.channelId);
+    dest.botAdmins = botAdminSnapshot(perms, new Date().toISOString());
+    dest.botsMissingAdmin = botsMissingAdmin(perms);
+    const perm = perms.find((b) => b.role === "main") || perms[0];
+    dest.lastAdminCheckAt = new Date().toISOString();
+    dest.botAdminStatus = perm.status;
+    const missBots = botsMissingAdmin(perms);
+    if (!perm.ok) {
+      if (!perm.transient) {
+        // Doimiy nosozlik: kanal yopiladi, kredit band qilinmaydi.
+        dest.botHasAdminRights = false;
+        dest.status = "permission_lost";
+        dest.permissionLostAt = dest.permissionLostAt || new Date().toISOString();
+        u.state = null;
+        save();
+        const owner = userById(dest.ownerId);
+        if (owner && !dest.permissionNotifiedAt) {
+          dest.permissionNotifiedAt = nowStr();
+          if (notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_lost_msg", { title: esc(dest.title) }));
+          save();
+        }
+        return send(chat, T(u, "ch_err_order", { title: esc(dest.title) }) + "\n\n" +
+          T(u, perm.status === CHK.NO_RIGHTS ? "ch_err_rights" : "ch_err_noadmin"), menuFor(u));
+      }
+      // Vaqtinchalik xato — buyurtmani to'xtatmaymiz, lekin ogohlantiramiz.
+      save();
+      if (missBots.length) {
+        // Asosiy botning javobi noaniq bo'lsa ham, ishchi botda doimiy huquq
+        // yo'qligi aniq — buyurtma yaratilmaydi, kredit band qilinmaydi.
+        u.state = null;
+        return send(chat, botsMissingText(u, perms), menuFor(u));
+      }
+    } else {
+      dest.botHasAdminRights = true;
+      if (dest.status === "permission_lost") {
+        dest.status = "active";
+        dest.permissionLostAt = "";
+        dest.permissionNotifiedAt = "";
+      }
+      if (missBots.length) {
+        // Asosiy bot admin, lekin ishchi bot emas — vazifalar tekshirilmay
+        // qolishini oldini olish uchun buyurtma qabul qilinmaydi.
+        u.state = null;
+        save();
+        return send(chat, botsMissingText(u, perms), menuFor(u));
+      }
+    }
+  }
   const unit = perSub();
   const chk = calculateOrderAffordability(u.credits, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
     return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {short} kredit\n\nKredit ishlash uchun “📋 Vazifalar” tugmasini bosing — har bir obuna uchun {reward} kredit beriladi.", { need: chk.totalCost, have: u.credits.available, short: chk.shortage, reward: S().creditRewardTelegram }), menuFor(u));
   }
-  u.credits.available -= chk.totalCost;
-  u.credits.reserved += chk.totalCost;
-  u.activeOrdersCount++;
+  // Reservation — INSTANSLARARO kritik bo'lim. Ichida token va balans QAYTA
+  // tekshiriladi: tarmoq tekshiruvi (bot huquqi) davomida boshqa instans
+  // yozgan bo'lsa, biz eski snapshot bilan band qilmaymiz.
+  const txRes = await withStateTx(async () => {
+  if (rec.orderId) {
+    const prev = db.orders.find((x) => x.id === rec.orderId);
+    if (prev) return { state: "exists", order: prev };
+  }
+  if (rec.inflight && rec.claimBy && rec.claimBy !== INSTANCE_ID) return { state: "busy" };
+  rec.inflight = true;
+  rec.claimBy = INSTANCE_ID;
+  rec.claimedAtMs = Date.now();
+  const chk2 = calculateOrderAffordability(u.credits, qty, perSub());
+  if (!chk2.canAfford) return { state: "no_credit", chk: chk2 };
+  const endOp = opStart("ord");
+  const snap = creditsSnapshot(u);
+  const destBefore = { totalRequested: dest.totalRequested, pendingSubscriptions: dest.pendingSubscriptions, pendingFollowers: dest.pendingFollowers };
+  u.credits.available -= chk2.totalCost;
+  u.credits.reserved += chk2.totalCost;
+  u.activeOrdersCount = (Number(u.activeOrdersCount) || 0) + 1;
   const o = {
     id: nid("ord"),
     seq: ++db.seq,
@@ -1780,7 +3403,7 @@ async function createOrderConfirmed(u, destId, qty, chat) {
     pendingQuantity: qty,
     cancelledQuantity: 0,
     unitCost: unit,
-    totalCost: chk.totalCost,
+    totalCost: chk2.totalCost,
     freeUnits: 0,
     status: "active",
     createdAt: nowStr()
@@ -1788,43 +3411,136 @@ async function createOrderConfirmed(u, destId, qty, chat) {
   db.orders.push(o);
   platform === "telegram" ? (dest.totalRequested += qty, dest.pendingSubscriptions += qty) : (dest.totalRequested += qty, dest.pendingFollowers += qty);
   moderationScan("order", { userId: u.id, userName: u.displayName, channelId: o.destinationId, title: o.destinationTitle, qty });
-  addTx(u, -chk.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}` });
+  addTx(u, -chk2.totalCost, "order_spend", "Buyurtma: " + o.destinationTitle + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}` });
+  rec.orderId = o.id;
   u.state = null;
-  save();
-  return send(chat, T(u, "ord_created", { title: esc(o.destinationTitle), qty, total: chk.totalCost }), menuFor(u));
+  endOp();
+  // Reservation xabardan OLDIN saqlanadi; saqlanmasa buyurtma va band qilingan
+  // kredit qaytariladi (token ham bo'shatiladi) — muvaffaqiyat xabari YO'Q.
+  if (!(await flushOrRollback(() => {
+    db.orders = db.orders.filter((x) => x.id !== o.id);
+    creditsRestore(u, snap);
+    u.activeOrdersCount = Math.max(0, (Number(u.activeOrdersCount) || 0) - 1);
+    dest.totalRequested = destBefore.totalRequested;
+    dest.pendingSubscriptions = destBefore.pendingSubscriptions;
+    dest.pendingFollowers = destBefore.pendingFollowers;
+    rec.orderId = "";
+  }))) return { state: "save_failed" };
+  return { state: "created", order: o };
+  });
+  if (!txRes.ok) return send(chat, T(u, "save_err"), menuFor(u));
+  const tres = txRes.value || { state: "save_failed" };
+  if (tres.state === "exists") {
+    u.state = null;
+    return send(chat, T(u, "ord_created", { title: esc(tres.order.destinationTitle), qty: tres.order.requestedQuantity, total: tres.order.totalCost }), menuFor(u));
+  }
+  if (tres.state === "busy") return send(chat, T(u, "ord_inflight"), menuFor(u));
+  if (tres.state === "no_credit") {
+    u.state = null;
+    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit", { need: tres.chk.totalCost, have: u.credits.available }), menuFor(u));
+  }
+  if (tres.state !== "created") return send(chat, T(u, "save_err"), menuFor(u));
+  return send(chat, T(u, "ord_created", { title: esc(tres.order.destinationTitle), qty, total: tres.order.totalCost }), menuFor(u));
 }
 async function cancelOrder(u, orderId, chat) {
+  // Instanslararo kritik bo'lim: qaytim tekshiruvi (`reserved` yetarliligi va
+  // takroriy qaytim) QAYTA O'QILGAN holat ustida bajariladi. Ikki instans bir
+  // buyurtmani bir vaqtda bekor qilsa, faqat bittasi qaytim yozadi.
+  const txRes = await withStateTx(async () => {
   const o = db.orders.find((x) => x.id === orderId && x.userId === u.id);
-  if (!o || o.status !== "active") return send(chat, TR(u, "Buyurtma topilmadi yoki allaqachon yopilgan."), menuFor(u));
+  if (!o || o.status !== "active") return { state: "notfound" };
   const { refundableUnits, refundCredits } = calculateRefundAmount(o);
-  o.cancelledQuantity += refundableUnits;
+  const refundKey = `refund:${o.id}`;
+  // Takroriy qaytim (jurnalda yozuv bor) — hech narsa o'zgartirilmaydi.
+  if (refundCredits > 0 && db.transactions.some((t) => t.idempotencyKey === refundKey)) {
+    auditSys("refund_rejected", o.id, "already_refunded");
+    return { state: "already" };
+  }
+  // `reserved` yetarliligini TEKSHIRAMIZ — `Math.max(0, ...)` bilan yashirmaymiz.
+  // Legacy nomuvofiqlik bo'lsa: amal rad etiladi, balans va jurnal tegilmaydi.
+  if (refundCredits > 0 && Number(u.credits.reserved) + 1e-9 < refundCredits) {
+    auditSys("refund_rejected", o.id, `reserved_insufficient reserved=${u.credits.reserved} required=${refundCredits} user=${u.id}`);
+    console.error(`Qaytim rad etildi (${o.id}): reserved ${u.credits.reserved} < refund ${refundCredits}`);
+    return { state: "insufficient" };
+  }
+  const endOp = opStart("refund");
+  const snap = creditsSnapshot(u);
+  const before = {
+    cancelledQuantity: Number(o.cancelledQuantity) || 0,
+    pendingQuantity: Number(o.pendingQuantity) || 0,
+    completedAt: o.completedAt || "",
+    activeOrders: Number(u.activeOrdersCount) || 0
+  };
+  const dest = destOf(o.destinationId);
+  const destBefore = dest ? { pendingSubscriptions: dest.pendingSubscriptions, pendingFollowers: dest.pendingFollowers } : null;
+  const touched = db.tasks.filter((t) => t.orderId === o.id && OPEN.has(t.status)).map((t) => t.id);
+  o.cancelledQuantity = before.cancelledQuantity + refundableUnits;
   o.pendingQuantity = 0;
   o.status = "cancelled";
   o.completedAt = nowStr();
-  u.credits.reserved = Math.max(0, u.credits.reserved - refundCredits);
+  u.credits.reserved -= refundCredits;
   u.credits.available += refundCredits;
   u.credits.refunded += refundCredits;
-  u.activeOrdersCount = Math.max(0, u.activeOrdersCount - 1);
-  for (const t of db.tasks) if (t.orderId === o.id && OPEN.has(t.status)) t.status = "CANCELLED";
-  const dest = destOf(o.destinationId);
+  u.activeOrdersCount = Math.max(0, before.activeOrders - 1);
+  for (const t of db.tasks) if (touched.includes(t.id)) t.status = "CANCELLED";
   if (dest) {
     dest.pendingSubscriptions !== void 0 && (dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - refundableUnits));
     dest.pendingFollowers !== void 0 && (dest.pendingFollowers = Math.max(0, dest.pendingFollowers - refundableUnits));
   }
-  addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: `refund:${o.id}` });
-  save();
-  return send(chat, TRV(u, "↩️ <b>Buyurtma bekor qilindi</b>\n\nKelgan obunachilar saqlanadi ({verified} ta), bajarilmagan {unfulfilled} ta uchun <b>{refund} kredit</b> qaytarildi.\n{balance}", { verified: o.verifiedQuantity, unfulfilled: refundableUnits, refund: refundCredits, balance: balanceLine(u) }), menuFor(u));
+  if (refundCredits > 0)
+    addTx(u, refundCredits, "order_refund", `Bekor qilingan buyurtma qaytimi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: refundKey });
+  endOp();
+  // Qaytim xabardan OLDIN saqlanadi; saqlanmasa hammasi qaytariladi.
+  if (!(await flushOrRollback(() => {
+    o.status = "active";
+    o.cancelledQuantity = before.cancelledQuantity;
+    o.pendingQuantity = before.pendingQuantity;
+    o.completedAt = before.completedAt;
+    creditsRestore(u, snap);
+    u.activeOrdersCount = before.activeOrders;
+    if (dest && destBefore) {
+      dest.pendingSubscriptions = destBefore.pendingSubscriptions;
+      dest.pendingFollowers = destBefore.pendingFollowers;
+    }
+    for (const t of db.tasks) if (touched.includes(t.id)) t.status = "PENDING";
+  })))
+    return { state: "save_failed" };
+  return { state: "ok", verified: o.verifiedQuantity, refundableUnits, refundCredits };
+  });
+  const cs = txRes.ok && txRes.value ? txRes.value : { state: "save_failed" };
+  if (cs.state === "notfound") return send(chat, TR(u, "Buyurtma topilmadi yoki allaqachon yopilgan."), menuFor(u));
+  if (cs.state === "already") return send(chat, TR(u, "⚠️ Bu buyurtma uchun qaytim allaqachon berilgan."), menuFor(u));
+  if (cs.state === "insufficient") return send(chat, TR(u, "⚠️ Qaytimni hozir bajarib bo‘lmadi (hisob ma’lumotida nomuvofiqlik). Balans o‘zgartirilmadi — admin tekshiradi."), menuFor(u));
+  if (cs.state !== "ok") return send(chat, T(u, "save_err"), menuFor(u));
+  return send(chat, TRV(u, "↩️ <b>Buyurtma bekor qilindi</b>\n\nKelgan obunachilar saqlanadi ({verified} ta), bajarilmagan {unfulfilled} ta uchun <b>{refund} kredit</b> qaytarildi.\n{balance}", { verified: cs.verified, unfulfilled: cs.refundableUnits, refund: cs.refundCredits, balance: balanceLine(u) }), menuFor(u));
+}
+// Kanal holati bo'yicha xabar kaliti (spec §1.5 — har xato alohida tushuntiriladi).
+var CH_ERR_KEY = {
+  bot_not_admin: "ch_err_noadmin",
+  insufficient_permissions: "ch_err_rights",
+  channel_inaccessible: "ch_err_channel",
+  user_no_rights: "ch_err_user",
+  api_error: "ch_err_api"
+};
+function chErrText(u, res) {
+  if (res.reason === "bad_address") return T(u, "ch_err_address");
+  return T(u, CH_ERR_KEY[res.status] || "ch_err_channel");
+}
+// Kanalda admin bo'lmagan botlar haqida ogohlantirish (asosiy + ishchi).
+function botsMissingText(u, results) {
+  const miss = botsMissingAdmin(results);
+  return miss.length ? T(u, "ch_bots_missing", { bots: esc(miss.join(", ")) }) : "";
 }
 async function addChannel(u, text, chat) {
-  const uname = text.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
-  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return send(chat, TR(u, "Manzil noto\u2018g\u2018ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel"));
-  const info = await tg("getChat", { chat_id: `@${uname}` });
-  if (!info.ok || info.result.type !== "channel") return send(chat, TR(u, "\u274C Bu manzilda kanal topilmadi.\n\nKanal <b>ommaviy (public)</b> bo\u2018lishi va manzili @ bilan yozilishi kerak."));
-  const ch = info.result;
-  const botMe = await checkBotAdmin(ch.id);
-  if (!botMe) return send(chat, TR(u, "\u274C Bot bu kanalda <b>administrator</b> emas.\n\nKanal sozlamalari \u2192 Administratorlar \u2192 botni qo\u2018shib, qayta yuboring."));
-  const me = await tg("getChatMember", { chat_id: ch.id, user_id: u.telegramId });
-  if (!me.ok || !["creator", "administrator"].includes(me.result.status)) return send(chat, TR(u, "\u274C Siz bu kanalning administratori emassiz.\n\nFaqat o\u2018zingiz boshqaradigan kanalni ulash mumkin."));
+  // To'liq tekshiruv: kanal → bot administratorligi → bot huquqlari →
+  // foydalanuvchining boshqaruv huquqi. `getChat` yolg'iz adminlikni isbotlamaydi.
+  const res = await verifyChannelForOwner(text, u.telegramId);
+  if (!res.ok) {
+    // Holat (u.state) saqlanadi — foydalanuvchi tuzatib qayta yuborishi mumkin.
+    return send(chat, chErrText(u, res), menuFor(u));
+  }
+  const ch = res.chat;
+  const uname = res.username;
   const existing = db.channels.find((c) => c.channelId === String(ch.id) && c.ownerId === u.id && c.disconnectedAt);
   if (existing) {
     // Avval uzilgan kanal qayta ulanmoqda — tarix saqlanadi, yangi yozuv yaratilmaydi.
@@ -1833,9 +3549,16 @@ async function addChannel(u, text, chat) {
     existing.title = ch.title;
     existing.username = ch.username || uname;
     existing.botHasAdminRights = true;
+    existing.botAdminStatus = CHK.OK;
+    existing.botRightsLimited = !!res.bot.limited;
+    existing.lastAdminCheckAt = new Date().toISOString();
+    existing.botAdmins = botAdminSnapshot(res.bots, new Date().toISOString());
+    existing.botsMissingAdmin = botsMissingAdmin(res.bots);
+    existing.permissionLostAt = "";
+    existing.permissionNotifiedAt = "";
     u.state = null;
     save();
-    return send(chat, T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) }) + TR(u, "\n♻️ Kanal qayta ulandi — oldingi tarix saqlanib qoldi."), menuFor(u));
+    return send(chat, T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) }) + TR(u, "\n♻️ Kanal qayta ulandi — oldingi tarix saqlanib qoldi.") + botsMissingText(u, res.bots), menuFor(u));
   }
   const existing2 = db.channels.find((c) => c.channelId === String(ch.id) && !c.disconnectedAt);
   if (existing2) {
@@ -1850,6 +3573,13 @@ async function addChannel(u, text, chat) {
     ownerId: u.id,
     ownerName: u.displayName,
     botHasAdminRights: true,
+    botAdminStatus: CHK.OK,
+    botRightsLimited: !!res.bot.limited,
+    botAdmins: botAdminSnapshot(res.bots, new Date().toISOString()),
+    botsMissingAdmin: botsMissingAdmin(res.bots),
+    lastAdminCheckAt: new Date().toISOString(),
+    permissionLostAt: "",
+    permissionNotifiedAt: "",
     totalRequested: 0,
     verifiedSubscribers: 0,
     activeSubscribers: 0,
@@ -1859,29 +3589,253 @@ async function addChannel(u, text, chat) {
     status: "active",
     createdAt: nowStr()
   });
-  // Bir martalik sovg'a: kanalini birinchi marta ulagan foydalanuvchiga
-  const linkBonus = u.channelBonusGiven ? 0 : Math.max(0, Number(S().creditRewardChannelLink) || 0);
-  if (linkBonus > 0) {
-    u.channelBonusGiven = true;
-    u.credits.available += linkBonus;
-    addTx(u, linkBonus, "channel_link_bonus", "Kanal ulandi: " + ch.title, { idempotencyKey: `chlink:${ch.id}` });
-  }
+  // Bir martalik sovg'a: kanalini birinchi marta ulagan foydalanuvchiga.
+  // `grantChannelLinkBonus()` sovg'ani darhol saqlaydi va saqlanmasa `-1`
+  // qaytaradi — bu holda foydalanuvchiga summa ko'rsatilmaydi.
+  const granted = await grantChannelLinkBonus(u, ch);
+  const linkBonus = Math.max(0, granted);
+  const bonusOk = granted >= 0;
   u.state = null;
-  save();
+  if (linkBonus <= 0 || !bonusOk) save();
   moderationScan("channel", { userId: u.id, userName: u.displayName, channelId: String(ch.id), title: ch.title, username: ch.username || uname });
   const head = T(u, "ch_added", { title: esc(ch.title), username: esc(ch.username || uname) });
-  const autoCh = autoOrderFromBalance(u);
-  const tail = (linkBonus > 0 ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "") +
+  const autoRes = await withStateTx(() => autoOrderFromBalance(u));
+  const autoCh = autoRes.ok ? autoRes.value : null;
+  const tail = (res.bot && res.bot.limited ? T(u, "ch_rights_warn") : "") +
+    botsMissingText(u, res.bots) +
+    (linkBonus > 0 && bonusOk ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "") +
+    (!bonusOk ? "\n\n" + T(u, "save_err") : "") +
     (autoCh ? T(u, "auto_order_note", { qty: autoCh.qty, title: esc(autoCh.channel.title) }) : "");
   return send(chat, head + tail, menuFor(u));
 }
 var BOT_ID = 0;
-async function checkBotAdmin(chatId) {
+// --- Kanal administratorligini tekshirish (spec §1) ---
+// Har bir nosozlik ALOHIDA holat bilan qaytadi. Avvalgi kodda hammasi bitta
+// `false` ga tiqilardi: tarmoq uzilishi ham, huquq yetishmasligi ham, kanal
+// o'chirilgani ham bir xil "bot administrator emas" degan xulosaga olib
+// kelardi. Bu noto'g'ri xulosa — API xatosi administratorlikning isboti emas.
+var CHK = {
+  OK: "ok",
+  NO_BOT: "bot_not_admin",
+  NO_RIGHTS: "insufficient_permissions",
+  NO_CHANNEL: "channel_inaccessible",
+  NO_USER: "user_no_rights",
+  API: "api_error"
+};
+// Telegram xatosini "vaqtinchalik" va "doimiy" ga ajratamiz. Doimiy xato
+// (chat not found, not enough rights) — kanal holati haqidagi fakt. Vaqtinchalik
+// xato (timeout, 5xx, 429) esa umuman xulosa chiqarishga asos bo'lmaydi.
+function tgFailureKind(r) {
+  if (!r || r.ok) return "";
+  const k = r.errKind || classifyTgFailure(r).errKind;
+  if (k === TG_ERR.NOT_FOUND) return "not_found";
+  if (k === TG_ERR.NO_RIGHTS) return "no_rights";
+  if ([TG_ERR.NETWORK, TG_ERR.NETWORK_TIMEOUT, TG_ERR.SERVER, TG_ERR.RATE_LIMIT, TG_ERR.AUTH].includes(k)) return "transient";
+  return "permanent";
+}
+// Nosozlikni yagona diagnostika yozuviga aylantiradi. Joblar va jurnal shu
+// shaklni ishlatadi — hech qayerda "Telegram API xatosi" kabi umumiy matn
+// bilan almashtirilmaydi.
+function tgDiag(r, method, ctx = {}) {
+  const f = r && r.errKind ? r : classifyTgFailure(r);
+  return {
+    method: method || r.failedMethod || "",
+    chatId: ctx.chatId != null ? String(ctx.chatId) : "",
+    userId: ctx.userId != null ? String(ctx.userId) : "",
+    taskId: ctx.taskId || "",
+    orderId: ctx.orderId || "",
+    channelDbId: ctx.channelDbId || "",
+    stage: ctx.stage || "",
+    errorCode: Number(r && r.error_code) || 0,
+    description: String((r && r.description) || "").slice(0, 300),
+    httpStatus: Number(r && r.http_status) || 0,
+    retryAfter: Number(f.retryAfter) || 0,
+    errKind: f.errKind || TG_ERR.UNKNOWN,
+    transient: !!f.transient,
+    ts: new Date().toISOString()
+  };
+}
+// Har bir nosozlik bazaga yoziladi va to'liq holda logga chiqadi (spec §1).
+var VERIFY_ERRORS_MAX = 5e3;
+function recordVerifyFailure(diag) {
+  if (!diag) return null;
+  const rec = { id: nid("verr"), ...diag };
+  if (!Array.isArray(db.verifyErrors)) db.verifyErrors = [];
+  db.verifyErrors.push(rec);
+  if (db.verifyErrors.length > VERIFY_ERRORS_MAX) db.verifyErrors.splice(0, db.verifyErrors.length - VERIFY_ERRORS_MAX);
+  console.error(`[verify-error] ${JSON.stringify(rec)}`);
+  return rec;
+}
+// 401 (token) va 403 (block) — administrator darhol bilishi kerak, lekin
+// bir xil xabar bilan spam qilinmaydi.
+var ADMIN_ALERTS = /* @__PURE__ */ new Map();
+function alertAdmins(key, text, cooldownMs = 18e5) {
+  const last = ADMIN_ALERTS.get(key) || 0;
+  if (Date.now() - last < cooldownMs) return false;
+  ADMIN_ALERTS.set(key, Date.now());
+  for (const a of ADMIN_IDS) send(a, text).catch(() => {});
+  return true;
+}
+// Vaqtinchalik xatodan keyingi kutish: 429 bo'lsa retry_after, aks holda
+// eksponensial backoff (5 daqiqadan 6 soatgacha).
+function retryDelayMs(attempt, retryAfterSec = 0) {
+  if (retryAfterSec > 0) return Math.min(6 * 36e5, retryAfterSec * 1e3 + 1e3);
+  return Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, Math.max(0, attempt))));
+}
+// Cheklangan parallellik: bir vaqtda barcha so'rovlarni otib yubormaymiz.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length || 1) }, async () => {
+    for (;;) {
+      const idx = i++;
+      if (idx >= items.length) return;
+      out[idx] = await fn(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+function botIdOf() {
   const b = curBot();
-  const me = b && b.botId ? b.botId : BOT_ID;
-  if (!me) return false;
-  const r = await tg("getChatMember", { chat_id: chatId, user_id: me });
-  return r.ok && r.result.status === "administrator";
+  return (b && b.botId) || BOT_ID || 0;
+}
+// Bot kanalda administratormi va kerakli huquqlari bormi?
+// `getChat` dan alohida tekshiriladi — kanal mavjudligi administratorlikni
+// isbotlamaydi (spec §1: "getChat alone is not enough").
+// Kanalda AYNAN SHU bot administrator ekanini tekshiradi.
+// Muhim: har bir bot O'Z tokeni va O'Z `botId` si bilan tekshiriladi. Ilgari
+// ishchi botning `botId` si bo'sh bo'lsa asosiy botning id'si ishlatilardi va
+// tekshiruv boshqa bot haqida xulosa chiqarardi (spec: ishchi botlar ham xuddi
+// asosiy bot kabi tekshiriladi).
+function botCheckMeta(bot, extra = {}) {
+  return {
+    botDbId: bot ? bot.id : "",
+    botLabel: bot ? (bot.username ? "@" + bot.username : bot.id || "bot") : "bot",
+    botId: Number(bot && bot.botId) || 0,
+    role: bot ? bot.role || "worker" : "",
+    ...extra
+  };
+}
+async function inspectBotAdminFor(bot, chatId) {
+  if (!bot || !bot.token) return botCheckMeta(bot, { status: CHK.API, ok: false, reason: "bot_token_missing", transient: true });
+  const botId = Number(bot.botId) || 0;
+  if (!botId) return botCheckMeta(bot, { status: CHK.API, ok: false, reason: "bot_id_missing", transient: true });
+  const r = await tgWith(bot, "getChatMember", { chat_id: chatId, user_id: botId }, 15e3);
+  if (!r.ok) {
+    const kind = tgFailureKind(r);
+    if (kind === "transient") return botCheckMeta(bot, { status: CHK.API, ok: false, reason: String(r.description || "api"), transient: true });
+    // A'zo bo'lmasa yoki o'qish huquqi bo'lmasa Telegram aynan shu turdagi
+    // xatoni beradi — bunda bot haqiqatan administrator emas.
+    return botCheckMeta(bot, { status: CHK.NO_BOT, ok: false, reason: String(r.description || kind) });
+  }
+  const st = r.result.status;
+  if (st === "creator") return botCheckMeta(bot, { status: CHK.OK, ok: true, botStatus: st, rights: null, missing: [], limited: false });
+  if (st !== "administrator") return botCheckMeta(bot, { status: CHK.NO_BOT, ok: false, botStatus: st, reason: "bot_status_" + st });
+  const rights = r.result.permissions || null;
+  const missing = [];
+  if (rights && rights.can_invite_users === false) missing.push("can_invite_users");
+  // Administrator, lekin huquqlar qisqartirilgan. Bu bloklamaydi (a'zolikni
+  // o'qish uchun administratorlik yetarli), lekin panelda va xabarda ko'rsatiladi.
+  return botCheckMeta(bot, { status: CHK.OK, ok: true, botStatus: st, rights, missing, limited: missing.length > 0 });
+}
+async function inspectBotAdmin(chatId) {
+  return inspectBotAdminFor(curBot(), chatId);
+}
+// Tekshiriladigan botlar: asosiy bot birinchi, keyin yoqilgan ishchi botlar.
+function botsForChecks() {
+  const list = botsList().filter((b) => b && b.token && b.enabled !== false);
+  return list.slice().sort((a, b) => (a.role === "main" ? 0 : 1) - (b.role === "main" ? 0 : 1));
+}
+// Kanalda BARCHA yoqilgan botlar administrator ekanini tekshiradi.
+// Telegram'ni bosib ketmaslik uchun bir vaqtda 3 tadan ko'p so'rov yuborilmaydi.
+async function inspectAllBotsAdmin(chatId) {
+  const bots = botsForChecks();
+  if (!bots.length) return [{ ...(await inspectBotAdmin(chatId)), botDbId: "env", botLabel: "env", role: "main" }];
+  return mapLimit(bots, 3, (b) => inspectBotAdminFor(b, chatId));
+}
+// Natijalarni kanal yozuviga saqlash uchun ixcham ko'rinish.
+function botAdminSnapshot(results, at) {
+  const map = {};
+  for (const r of results || []) {
+    if (!r || !r.botDbId) continue;
+    map[r.botDbId] = {
+      botId: r.botId || 0,
+      label: r.botLabel || r.botDbId,
+      role: r.role || "",
+      status: r.status,
+      ok: !!r.ok,
+      limited: !!r.limited,
+      missing: r.missing || [],
+      reason: r.reason || "",
+      transient: !!r.transient,
+      checkedAt: at
+    };
+  }
+  return map;
+}
+// Administrator bo'lmagan botlar ro'yxati (vaqtinchalik xato hisobga olinmaydi).
+function botsMissingAdmin(results) {
+  return (results || []).filter((r) => r && !r.ok && !r.transient).map((r) => r.botLabel || r.botDbId);
+}
+// Kanalni qo'shayotgan foydalanuvchida boshqaruv huquqi bormi?
+async function inspectUserRights(chatId, userId) {
+  const r = await tg("getChatMember", { chat_id: chatId, user_id: userId }, 15e3);
+  if (!r.ok) {
+    const kind = tgFailureKind(r);
+    if (kind === "transient") return { status: CHK.API, ok: false, reason: String(r.description || "api"), transient: true };
+    if (kind === "no_rights") return { status: CHK.NO_RIGHTS, ok: false, reason: String(r.description || "no_rights") };
+    return { status: CHK.NO_USER, ok: false, reason: String(r.description || kind) };
+  }
+  const st = r.result.status;
+  if (st === "creator") return { status: CHK.OK, ok: true, userStatus: st };
+  if (st === "administrator") {
+    const p = r.result.permissions || null;
+    // Administrator bo'lsa ham barcha boshqaruv huquqlari olib qo'yilgan bo'lishi mumkin.
+    if (p && p.can_manage_chat === false && p.can_invite_users === false && p.can_post_messages === false && p.can_delete_messages === false) {
+      return { status: CHK.NO_USER, ok: false, userStatus: st, reason: "no_management_rights" };
+    }
+    return { status: CHK.OK, ok: true, userStatus: st, rights: p };
+  }
+  return { status: CHK.NO_USER, ok: false, userStatus: st, reason: "user_status_" + st };
+}
+// Kanal manzilini (@username yoki t.me havola) telegram chat obyektiga aylantiradi.
+async function resolveChannel(address) {
+  const uname = String(address || "").trim()
+    .replace(/^https?:\/\/t\.me\//i, "")
+    .replace(/^@/, "")
+    .replace(/\/.*$/, "");
+  if (!/^[A-Za-z0-9_]{4,}$/.test(uname)) return { status: CHK.NO_CHANNEL, ok: false, reason: "bad_address", username: uname };
+  const info = await tg("getChat", { chat_id: "@" + uname }, 15e3);
+  if (!info.ok) {
+    const kind = tgFailureKind(info);
+    if (kind === "transient") return { status: CHK.API, ok: false, reason: String(info.description || "api"), transient: true, username: uname };
+    return { status: CHK.NO_CHANNEL, ok: false, reason: kind === "not_found" ? "not_found" : String(info.description || kind), username: uname };
+  }
+  const ch = info.result;
+  if (ch.type !== "channel") return { status: CHK.NO_CHANNEL, ok: false, reason: "not_a_channel", username: uname };
+  return { status: CHK.OK, ok: true, chat: ch, username: ch.username || uname };
+}
+// To'liq tekshiruv: kanal mavjudmi → bot administratormi → huquqlari →
+// foydalanuvchida boshqaruv huquqi bormi. Har qadam alohida holat qaytaradi.
+async function verifyChannelForOwner(address, userId) {
+  const res = await resolveChannel(address);
+  if (!res.ok) return res;
+  const ch = res.chat;
+  // Asosiy va ishchi — BARCHA yoqilgan botlar tekshiriladi: istalgan bot
+  // foydalanuvchi so'roviga javob berib, obunani tekshirishi mumkin.
+  // Kanalni ulash uchun hal qiluvchi tekshiruv — ASOSIY bot; ishchi botlarning
+  // holati ogohlantirish sifatida ko'rsatiladi va buyurtma yaratishda bloklaydi.
+  const bots = await inspectAllBotsAdmin(ch.id);
+  const bot = bots.find((b) => b.role === "main") || bots[0] || (await inspectBotAdmin(ch.id));
+  if (!bot.ok) return { ...bot, chat: ch, username: res.username, bots };
+  const user = await inspectUserRights(ch.id, userId);
+  if (!user.ok) return { ...user, chat: ch, username: res.username, bot, bots };
+  return { status: CHK.OK, ok: true, chat: ch, username: res.username, bot, user, bots };
+}
+async function checkBotAdmin(chatId) {
+  const r = await inspectBotAdmin(chatId);
+  return r.ok;
 }
 async function addInstagram(u, text, chat) {
   const m = text.trim().match(/^(?:https?:\/\/)?(?:www\.)?instagram\.com\/([A-Za-z0-9._]+)/i) || text.trim().match(/^@?([A-Za-z0-9._]{2,30})$/);
@@ -1969,6 +3923,12 @@ async function handleMessage(msg) {
   const chat = msg.chat.id;
   const text = (msg.text || "").trim();
   const { user: u, isNew } = getUser(msg.from, chat);
+  if (u.signupPending) {
+    const granted = await grantSignupBonus(u);
+    if (granted > 0) console.log(`Yangi foydalanuvchi ${u.telegramId} — +${granted} kredit sovg'a`);
+  }
+  // Xavfsizlik sahifasida "oxirgi faollik"ni ko'rsatish uchun — soatiga bir marta.
+  if (!u.lastSeenAt || String(u.lastSeenAt).slice(0, 13) !== nowStr().slice(0, 13)) u.lastSeenAt = nowStr();
   if (u.status === "blocked") {
     if (/^\/appeal/i.test(text)) {
       if (db.appeals.some((a) => a.userId === u.id && a.status === "NEW")) return send(chat, TR(u, "📨 Apellyatsiyangiz allaqachon ko‘rib chiqilmoqda."));
@@ -2024,6 +3984,7 @@ async function handleMessage(msg) {
     if (st.type === "ctl_code") return enterControllerCode(u, text, chat);
     if (st.type === "complaint") return submitComplaint(u, st.category, text, chat);
     if (st.type === "support") return submitComplaint(u, "Adminga murojaat (sozlamalar)", text, chat);
+    if (st.type === "security") return submitComplaint(u, "Xavfsizlik (shubhali kirish)", text, chat);
   }
   switch (LABEL2KEY[text] || text) {
     case "channels":
@@ -2052,6 +4013,7 @@ async function handleCallback(cq) {
   if (!chat) return;
   tg("answerCallbackQuery", { callback_query_id: cq.id });
   const { user: u } = getUser(from, chat);
+  if (u.signupPending) await grantSignupBonus(u);
   if (u.status === "blocked") return;
   if (S().isBotPaused && !isAdmin(u.telegramId)) return;
   const [cmd, ...argParts] = String(cq.data || "").split(":");
@@ -2103,7 +4065,8 @@ async function handleCallback(cq) {
     case "ordok": {
       const sc = u.state;
       if (!sc || sc.type !== "order_confirm") return send(chat, TR(u, "Buyurtma ma\u2019lumoti eskirgan. Qaytadan boshlang: Kanallarim \u2192 kanal \u2192 miqdor."), menuFor(u));
-      return createOrderConfirmed(u, sc.destId, sc.qty, chat);
+      // Token callback ma'lumotidan olinadi — u majburiy va foydalanuvchiga bog'langan.
+      return createOrderConfirmed(u, sc.destId, sc.qty, chat, arg || sc.token);
     }
     case "ordno":
       u.state = null;
@@ -2131,7 +4094,7 @@ async function handleCallback(cq) {
       if (!ch || !(ch.ownerId === u.id || (ch.controllers || []).some((k) => k.userId === u.id))) return;
       let refunded = 0;
       for (const o of db.orders.filter((x) => x.destinationId === ch.id && x.status === "active")) {
-        refunded += cancelOrderAdmin(o).refundCredits || 0;
+        refunded += (await cancelOrderAdmin(o)).refundCredits || 0;
       }
       // Kanal yozuvi O'CHIRILMAYDI: tarix, a'zoliklar va oxirgi tasdiqlangan
       // obunachilar soni snapshot sifatida saqlanadi (spec §7, §19).
@@ -2182,13 +4145,31 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       u.state = { type: "complaint", category: c, destinationId: dst.destinationId || null, destinationTitle: dst.destinationTitle || null };
       return send(chat, T(u, "cmp_enter", { cat: esc(c) }));
     }
+    // "⬅️ Orqaga" tugmasi shu yerga keladi — avval bu case yo'q edi va
+    // submenyudan qaytish umuman ishlamasdi.
+    case "settings":
+      return showSettings(u, chat);
     case "ntall": {
       if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
       const allOn = String(arg) !== "off";
       for (const k of ["subscribers", "referrals", "orders", "technical"]) u.notif[k] = allOn;
       save();
-      return showSettings(u, chat);
+      return showNotifications(u, chat);
     }
+    case "setnotif":
+      return showNotifications(u, chat);
+    case "setsec":
+      return showSecurity(u, chat);
+    case "setacc":
+      return showAccounts(u, chat);
+    case "setmain":
+      u.state = null;
+      save();
+      return send(chat, T(u, "set_main_msg"), menuFor(u));
+    case "secrep":
+      u.state = { type: "security" };
+      save();
+      return send(chat, T(u, "sec_report_prompt"));
     case "setmyt":
       return showMyTickets(u, chat);
     case "setrates":
@@ -2202,7 +4183,7 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
     case "notif":
       u.notifications = !u.notifications;
       save();
-      return showSettings(u, chat);
+      return showNotifications(u, chat);
     case "refa": {
       const [rid, cid] = String(arg || "").split("|");
       const ref = db.referrals.find((r) => r.id === rid && r.referrerId === u.id && !r.bonusIssued);
@@ -2224,7 +4205,7 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       if (!(arg in u.notif)) return;
       u.notif[arg] = u.notif[arg] === false;
       save();
-      return showSettings(u, chat);
+      return showNotifications(u, chat);
     }
   }
 }
@@ -2281,9 +4262,16 @@ Mukofot: TG ${S().creditRewardTelegram}, obunachi narxi ${perSub()}, ref ${S().c
     case "/addcredits": {
       const t = db.users[args[0]];
       const n = Number(args[1]);
-      if (!t || !Number.isFinite(n) || !n) return send(chat, "/addcredits TELEGRAM_ID SON");
-      t.credits.available = Math.max(0, t.credits.available + n);
-      addTx(t, n, "admin_adjustment", `Admin (${u.displayName})`);
+      if (!t || !Number.isFinite(n) || !n) return send(chat, "/addcredits TELEGRAM_ID SON [KALIT]");
+      // Uchinchi argument — ixtiyoriy idempotency kaliti (takroriy buyruqning
+      // oldini oladi). Berilmasa, buyruq at-least-once bo'lib qoladi.
+      const key = args[2] ? `adminadj:tg:${u.telegramId}:${args[2]}` : "";
+      // `applyAdminAdjust()` — tuzatish + darhol saqlash; saqlanmasa qaytariladi.
+      const adj = await applyAdminAdjust(t, n, `Admin (${u.displayName})`, key);
+      if (!adj.ok) {
+        if (adj.reason === "save_failed") return send(chat, T(u, "save_err"));
+        return send(chat, adj.reason === "insufficient" ? "Balans manfiy bo'lib qoladi — rad etildi." : "Bu kalit allaqachon qo'llangan.");
+      }
       notify(t, `\u{1F4B0} Hisobingiz ${n > 0 ? "+" : ""}${n} kreditga o\u2018zgartirildi.`);
       return done();
     }
@@ -2366,10 +4354,16 @@ async function hourlyReport() {
   db.lastHour = hour;
   save();
   if (!S().hourlyNotificationsEnabled) return;
+  // Faqat RASMIY tasdiqlangan obunalar hisoblanadi (spec §6.4). O'zi tasdiqlagan
+  // Instagram amali (SELF_CONFIRMED) "tekshirilgan obunachi" deb ko'rsatilmaydi.
   const per = {};
-  for (const e of db.verifyLog) if (e.at >= from && e.at < to) {
+  for (const e of db.verifyLog) {
+    if (e.at < from || e.at >= to) continue;
+    if (e.source === "self") continue;
     ((per[e.ownerId] ||= {})[e.title] ||= { n: 0, platform: e.platform }).n++;
   }
+  // Yangi tasdiqlangan obuna bo'lmasa — xabar yuborilmaydi (spec §6.6).
+  if (!Object.keys(per).length) return;
   const fmt = (ms) => new Date(ms + 5 * 36e5).toISOString().slice(11, 16);
   for (const [uid, items] of Object.entries(per)) {
     const u = userById(uid);
@@ -2385,10 +4379,10 @@ async function hourlyReport() {
     u.lastNotifHour = hour;
     const tgN = Object.values(items).filter((i) => i.platform === "telegram").reduce((a, i) => a + i.n, 0);
     const igN = Object.values(items).filter((i) => i.platform === "instagram").reduce((a, i) => a + i.n, 0);
+    const head = [tgN ? `\u{1F4E2} Telegram: +${tgN}` : "", igN ? `\u{1F4F8} Instagram: +${igN}` : ""].filter(Boolean).join("\n");
     await notify(u, `\u{1F550} <b>Soatlik hisobot (${fmt(from)} \u2013 ${fmt(to)})</b>
 
-\u{1F4E2} Telegram: +${tgN}
-\u{1F4F8} Instagram: +${igN}
+${head}
 
 ` + Object.entries(items).map(([t, i]) => `\u2022 ${esc(t)}: +${i.n}`).join("\n"));
   }
@@ -2398,6 +4392,8 @@ async function hourlyReport() {
 // olinadi, natija darhol yoziladi, keyingi tekshiruv 24 soat + jitter bilan
 // rejalashtiriladi. Jarayon qulasa, navbat bazada qoladi (restart-safe).
 var VERIFY_BATCH = Math.max(1, Number(process.env.VERIFY_BATCH) || 25);
+// Bitta partiyada bir vaqtda yuboriladigan getChatMember so'rovlari soni.
+var VERIFY_CONCURRENCY = Math.max(1, Math.min(10, Number(process.env.VERIFY_CONCURRENCY) || 4));
 var VERIFY_LOCK_MS = 10 * 6e4;
 function recoverStaleJobs() {
   let n = 0;
@@ -2425,7 +4421,10 @@ async function runVerificationJob(job) {
     job.lastError = !u ? "foydalanuvchi yo'q" : !ch ? "kanal yo'q" : "kanal uzilgan";
     return "skipped";
   }
-  const r = await checkMember(ch.channelId, u.telegramId);
+  // Diagnostika bilan tekshiramiz: xato sababi umumiy matn bilan
+  // almashtirilmaydi, `job.lastError` da haqiqiy Telegram javobi qoladi.
+  const info = await checkMemberInfo(ch.channelId, u.telegramId, { channelDbId: ch.id, stage: "recheck", userId: u.id });
+  const r = info.result;
   const now = at();
   m.lastCheckedAt = now;
   m.updatedAt = now;
@@ -2433,11 +4432,15 @@ async function runVerificationJob(job) {
     // Texnik xato = obunadan chiqish EMAS.
     m.status = m.status === "ACTIVE" ? "ACTIVE" : "CHECK_ERROR";
     m.lastCheckResult = "error";
+    m.lastCheckReason = info.reason || TG_ERR.UNKNOWN;
     m.consecutiveCheckErrors = (m.consecutiveCheckErrors || 0) + 1;
-    membershipEvent(job.userId, job.channelId, "CHECK_ERROR", m.status, m.status, "recheck", "error", "");
+    membershipEvent(job.userId, job.channelId, "CHECK_ERROR", m.status, m.status, "recheck", info.reason || "error", "");
     job.attemptCount = (job.attemptCount || 0) + 1;
-    job.lastError = "Telegram API xatosi";
-    const backoff = Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, job.attemptCount)));
+    job.lastError = `${info.reason || "error"}: ${String(info.description || "").slice(0, 160)}`;
+    job.lastErrorCode = info.diag ? info.diag.errorCode : 0;
+    job.lastHttpStatus = info.diag ? info.diag.httpStatus : 0;
+    // 429 bo'lsa faqat retry_after tugagach, aks holda eksponensial backoff.
+    const backoff = retryDelayMs(job.attemptCount, info.retryAfter || 0);
     job.status = "PENDING";
     job.lockedAt = "";
     job.scheduledAt = new Date(Date.now() + backoff).toISOString();
@@ -2485,32 +4488,204 @@ async function runVerificationJob(job) {
   scheduleMembershipCheck(m, Date.now() + memRecheckDelay());
   return r;
 }
-async function processVerificationJobs(limit = VERIFY_BATCH) {
-  const now = Date.now();
-  const due = db.verificationJobs
-    .filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= now)
-    .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt))
-    .slice(0, limit);
-  if (!due.length) return 0;
-  for (const job of due) {
-    try {
-      await runVerificationJob(job);
-    } catch (e) {
+// Saqlangan vazifa tekshiruvi: vaqtincha xato olgan vazifa navbatdan
+// avtomatik qayta tekshiriladi. Mukofot faqat Telegram a'zolikni tasdiqlaganda
+// beriladi va takroriy berilmaydi.
+async function runTaskCheckJob(job) {
+  const at = () => (/* @__PURE__ */ new Date()).toISOString();
+  job.status = "RUNNING";
+  job.lockedAt = at();
+  const done = (why) => {
+    job.status = "DONE";
+    job.completedAt = at();
+    job.lockedAt = "";
+    job.lastError = why || "";
+    return why || "done";
+  };
+  const t = db.tasks.find((x) => x.id === job.taskId);
+  const u = t ? userById(t.assignedTo) : null;
+  if (!t || !u) return done("vazifa yoki foydalanuvchi yo'q");
+  if (!OPEN.has(t.status)) return done("vazifa allaqachon yopilgan");
+  const dest = destOf(t.destinationId);
+  if (!dest || !dest.channelId || dest.disconnectedAt || (dest.status && dest.status !== "active")) {
+    // Kanal yaroqsiz (huquq yo'qolgan / uzilgan) — vazifa bekor qilinadi,
+    // tarix o'chmaydi va CHECK_ERROR da osilib qolmaydi.
+    t.status = "CANCELLED";
+    t.cancelReason = "channel_unavailable";
+    save();
+    return done("kanal mavjud emas");
+  }
+  const info = await checkMemberInfo(dest.channelId, u.telegramId, {
+    taskId: t.id,
+    orderId: t.orderId,
+    channelDbId: dest.id,
+    stage: "task_retry"
+  });
+  t.checkedAt = at();
+  if (info.result === "member") {
+    // Mukofot pul amali: butun mutatsiya INSTANSLARARO qulf ostida — holat
+    // qayta o'qiladi, shuning uchun parallel (boshqa instansdagi) tasdiqlash
+    // yoki takroriy job dublikat mukofot bermaydi.
+    const jobRes = await withStateTx(async () => {
+    const endOp = opStart("job");
+    const snapJ = verifyRollbackSnapshot(u, [t]);
+    const notices = [];
+    // Takroriy mukofot yo'q: applyVerified faqat hali tasdiqlanmagan vazifaga.
+    let got = 0;
+    if (t.status !== "VERIFIED" && t.status !== "SELF_CONFIRMED") got = applyVerified(u, t);
+    // Referal malakasi: job yo'lida ham HAQIQIY `getChatMember` tasdig'i
+    // hisoblanadi (bir marta — `bonusIssued`/idempotency himoyasi).
+    if (got > 0 && t.platform === "telegram") await tryQualifyReferral(u, { defer: notices, noSave: true });
+    t.consecutiveCheckErrors = 0;
+    t.retryAt = "";
+    t.lastCheckError = null;
+    t.lastCheckResult = "member";
+    endOp();
+    if (got > 0) {
+      const saved = await withSaveLock(async () => {
+        if (await flushSaveAwaited()) return true;
+        verifyRollbackApply(snapJ, u);
+        return false;
+      });
+      if (!saved) return { saved: false, notices: [] };
+    }
+    save();
+    return { saved: true, notices };
+    });
+    const jr = jobRes.ok && jobRes.value ? jobRes.value : { saved: false, notices: [] };
+    if (!jr.saved) {
       job.status = "PENDING";
       job.lockedAt = "";
       job.attemptCount = (job.attemptCount || 0) + 1;
-      job.lastError = String(e && e.message || e).slice(0, 160);
-      job.scheduledAt = new Date(Date.now() + Math.min(6 * 36e5, 5 * 6e4 * Math.pow(2, Math.min(6, job.attemptCount)))).toISOString();
-      console.error("A'zolik tekshiruvi xatosi:", job.lastError);
+      job.lastError = "save_failed";
+      job.scheduledAt = new Date(Date.now() + retryDelayMs(job.attemptCount)).toISOString();
+      console.error(`TASK_CHECK (${job.id}): saqlanmadi — mukofot qaytarildi, job qayta rejalashtirildi`);
+      save();
+      return "save_failed";
     }
-    await new Promise((res) => setTimeout(res, 120));
+    for (const n of jr.notices) n();
+    return done("");
   }
+  if (info.result === "not_member") {
+    // Obuna yo'q — vazifa FIFO navbatiga qaytadi (bu obunadan chiqish emas).
+    t.status = "PENDING";
+    t.isDeferred = true;
+    t.consecutiveCheckErrors = 0;
+    t.retryAt = "";
+    t.lastCheckError = null;
+    t.lastCheckResult = "not_member";
+    save();
+    return done("");
+  }
+  // Xato: haqiqiy sabab saqlanadi va backoff bilan qayta rejalashtiriladi.
+  t.consecutiveCheckErrors = (t.consecutiveCheckErrors || 0) + 1;
+  t.lastCheckReason = info.reason || TG_ERR.UNKNOWN;
+  t.lastCheckResult = "error";
+  if (info.diag) {
+    t.lastCheckError = {
+      errorCode: info.diag.errorCode,
+      description: info.diag.description,
+      httpStatus: info.diag.httpStatus,
+      retryAfter: info.diag.retryAfter,
+      errKind: info.diag.errKind,
+      at: info.diag.ts
+    };
+  }
+  const delay = retryDelayMs(t.consecutiveCheckErrors, info.retryAfter || 0);
+  t.retryAt = new Date(Date.now() + delay).toISOString();
+  job.attemptCount = (job.attemptCount || 0) + 1;
+  job.lastError = `${info.reason || "error"}: ${String(info.description || "").slice(0, 160)}`;
+  job.lastErrorCode = info.diag ? info.diag.errorCode : 0;
+  job.lastHttpStatus = info.diag ? info.diag.httpStatus : 0;
+  job.status = "PENDING";
+  job.lockedAt = "";
+  job.scheduledAt = new Date(Date.now() + delay).toISOString();
   save();
-  return due.length;
+  return "error";
+}
+// Jobni faqat hali PENDING va muddati kelgan bo'lsa o'zlashtiramiz. Ikki
+// jarayon bir vaqtda bir jobni olmasligi uchun qo'shimcha himoya (asosiy
+// himoya — scheduler qulfi).
+function claimJob(job) {
+  const fresh = db.verificationJobs.find((j) => j.id === job.id);
+  if (!fresh) return false;
+  if (fresh.status !== "PENDING") return false;
+  if (Date.parse(fresh.scheduledAt || "0") > Date.now()) return false;
+  fresh.status = "RUNNING";
+  fresh.lockedAt = new Date().toISOString();
+  Object.assign(job, fresh);
+  return true;
+}
+var MAINTENANCE_BUSY = false;
+// Cheklangan partiya. Scheduler qulfi bir vaqtda faqat bitta jarayonda
+// ishlashini kafolatlaydi (ikkinchi instans darhol 0 qaytaradi).
+async function processVerificationJobs(limit = VERIFY_BATCH) {
+  if (!await tryLock("scheduler")) return 0;
+  try {
+    const now = Date.now();
+    const due = db.verificationJobs
+      .filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= now)
+      .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt))
+      .slice(0, limit);
+    if (!due.length) return 0;
+    let done = 0;
+    for (const job of due) {
+      if (!claimJob(job)) continue;
+      try {
+        if (job.jobType === "TASK_CHECK") await runTaskCheckJob(job);
+        else await runVerificationJob(job);
+        done++;
+      } catch (e) {
+        job.status = "PENDING";
+        job.lockedAt = "";
+        job.attemptCount = (job.attemptCount || 0) + 1;
+        job.lastError = String(e && e.message || e).slice(0, 160);
+        job.scheduledAt = new Date(Date.now() + retryDelayMs(job.attemptCount)).toISOString();
+        console.error("A'zolik tekshiruvi xatosi:", job.lastError);
+      }
+      await new Promise((res) => setTimeout(res, 120));
+    }
+    save();
+    return done;
+  } finally {
+    await releaseLock("scheduler");
+  }
+}
+// (user_id, channel_id) juftligi bo'yicha yagona yozuv kafolatlanadi (spec §4).
+// Eski ma'lumotda takror yozuv paydo bo'lgan bo'lsa — birlashtiriladi, tarix
+// (events) o'chirilmaydi, ochiq joblar qolgan yozuvga bog'lanadi.
+function dedupeMemberships() {
+  const keepByPair = /* @__PURE__ */ new Map();
+  const drop = /* @__PURE__ */ new Set();
+  for (const m of db.memberships) {
+    const k = m.userId + "|" + m.channelId;
+    const keep = keepByPair.get(k);
+    if (!keep) {
+      keepByPair.set(k, m);
+      continue;
+    }
+    if (m.status === "ACTIVE" && keep.status !== "ACTIVE") {
+      keep.status = "ACTIVE";
+      keep.lastCheckResult = m.lastCheckResult || keep.lastCheckResult;
+    }
+    keep.firstVerifiedAt = [keep.firstVerifiedAt, m.firstVerifiedAt].filter(Boolean).sort()[0] || "";
+    keep.firstSeenAt = [keep.firstSeenAt, m.firstSeenAt].filter(Boolean).sort()[0] || "";
+    keep.lastCheckedAt = [keep.lastCheckedAt, m.lastCheckedAt].filter(Boolean).sort().pop() || "";
+    keep.lastMembershipChangeAt = [keep.lastMembershipChangeAt, m.lastMembershipChangeAt].filter(Boolean).sort().pop() || "";
+    keep.nextCheckAt = keep.nextCheckAt || m.nextCheckAt || "";
+    keep.consecutiveCheckErrors = Math.max(keep.consecutiveCheckErrors || 0, m.consecutiveCheckErrors || 0);
+    for (const j of db.verificationJobs) if (j.membershipId === m.id) j.membershipId = keep.id;
+    drop.add(m.id);
+  }
+  if (!drop.size) return 0;
+  db.memberships = db.memberships.filter((m) => !drop.has(m.id));
+  console.log(`A'zolik registridagi ${drop.size} ta takror yozuv birlashtirildi`);
+  return drop.size;
 }
 // Mavjud (avval tasdiqlangan) a'zoliklar uchun registrni to'ldirish — eski
 // ma'lumot yo'qolmaydi, keyingi tekshiruv navbatga qo'yiladi.
 function migrateMemberships() {
+  dedupeMemberships();
   let n = 0;
   const seen = /* @__PURE__ */ new Set();
   for (const t of db.tasks) {
@@ -2533,19 +4708,116 @@ function migrateMemberships() {
   }
   if (n) console.log(`A'zolik registriga ${n} ta eski obuna ko'chirildi`);
 }
+// Kanalda bot huquqi yo'qolgani ANIQLANDI — yangi vazifa berilmaydi, ochiq
+// vazifalar yopiladi, egasiga bir marta xabar boradi (spec §1.9).
+// Tarix (vazifalar, a'zoliklar, buyurtmalar) o'chirilmaydi.
+function markChannelPermissionLost(dest, reason) {
+  if (!dest || !dest.channelId) return false;
+  const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
+  dest.botHasAdminRights = false;
+  dest.botAdminStatus = reason === "no_rights" ? CHK.NO_RIGHTS : CHK.NO_BOT;
+  dest.status = "permission_lost";
+  dest.permissionLostAt = dest.permissionLostAt || nowStr();
+  for (const t of db.tasks) {
+    if (t.destinationId === dest.id && OPEN.has(t.status)) {
+      t.status = "CANCELLED";
+      t.cancelReason = "channel_permission_lost";
+    }
+  }
+  if (!wasLost && !dest.permissionNotifiedAt) {
+    dest.permissionNotifiedAt = nowStr();
+    const owner = userById(dest.ownerId);
+    if (owner && notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_lost_msg", { title: esc(dest.title) }));
+  }
+  return true;
+}
+// Kanal huquqlarini davriy tekshirish: cheklangan partiya, tarqatilgan holda.
+// Har bir kanal 6 soatda ko'pi bilan bir marta tekshiriladi — 1000 kanal bo'lsa
+// ham Telegram'ga yuklama tushmaydi (spec §8).
+var CH_ADMIN_SWEEP_HOURS = 6;
+var CH_ADMIN_SWEEP_BATCH = 5;
+async function channelHealthSweep() {
+  const now = Date.now();
+  const due = db.channels
+    .filter((c) => !c.disconnectedAt && c.channelId)
+    .filter((c) => !c.lastAdminCheckAt || now - (Date.parse(c.lastAdminCheckAt) || 0) > CH_ADMIN_SWEEP_HOURS * 36e5)
+    .sort((a, b) => (Date.parse(a.lastAdminCheckAt || 0) || 0) - (Date.parse(b.lastAdminCheckAt || 0) || 0));
+  if (!due.length) return 0;
+  let checked = 0;
+  for (const ch of due.slice(0, CH_ADMIN_SWEEP_BATCH)) {
+    // Asosiy + ishchi botlar — barchasi o'z tokeni bilan tekshiriladi.
+    const at = new Date().toISOString();
+    const bots = await inspectAllBotsAdmin(ch.channelId);
+    ch.botAdmins = botAdminSnapshot(bots, at);
+    const r = bots.find((b) => b.role === "main") || bots[0];
+    ch.lastAdminCheckAt = at;
+    ch.botAdminStatus = r.status;
+    // Ishchi botda huquq yo'q bo'lsa — egasiga bir marta aytamiz. Kanal
+    // butunlay yopilmaydi: asosiy bot ishlayapti va tarix o'chirilmaydi.
+    const miss = botsMissingAdmin(bots);
+    ch.botsMissingAdmin = miss;
+    const missKey = miss.join(",");
+    if (miss.length && ch.botsMissingNotifiedFor !== missKey) {
+      ch.botsMissingNotifiedFor = missKey;
+      const owner = userById(ch.ownerId);
+      if (owner && notifOn(owner, "technical")) notify(owner, T(owner, "ch_bots_missing", { bots: esc(miss.join(", ")) }));
+    } else if (!miss.length) {
+      ch.botsMissingNotifiedFor = "";
+    }
+    checked++;
+    // Vaqtinchalik xato — hech qanday xulosa chiqarilmaydi, holat o'zgarmaydi.
+    if (r.transient) continue;
+    if (r.ok) {
+      const wasLost = ch.status === "permission_lost";
+      ch.botHasAdminRights = true;
+      ch.botRightsLimited = !!r.limited;
+      if (wasLost) {
+        ch.status = "active";
+        ch.permissionLostAt = "";
+        ch.permissionNotifiedAt = "";
+        const owner = userById(ch.ownerId);
+        if (owner && notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_restored_msg", { title: esc(ch.title) }));
+      }
+      continue;
+    }
+    markChannelPermissionLost(ch, r.status === CHK.NO_RIGHTS ? "no_rights" : "no_admin");
+  }
+  if (checked) save();
+  return checked;
+}
 async function maintenance() {
-  const cutoff = Date.now() - 48 * 36e5;
-  for (const t of db.tasks) if (OPEN.has(t.status) && Date.parse(t.createdAt) < cutoff) t.status = "CANCELLED";
-  recoverStaleJobs();
-  await processVerificationJobs();
-  save();
+  // Bir jarayonda ikkita tik ustma-ust tushmasin (uzun ishlagan tik + interval).
+  if (MAINTENANCE_BUSY) return 0;
+  MAINTENANCE_BUSY = true;
+  try {
+    const cutoff = Date.now() - 48 * 36e5;
+    for (const t of db.tasks) if (OPEN.has(t.status) && Date.parse(t.createdAt) < cutoff) t.status = "CANCELLED";
+    recoverStaleJobs();
+    await processVerificationJobs();
+    await channelHealthSweep();
+    save();
+  } finally {
+    MAINTENANCE_BUSY = false;
+  }
 }
 // Har bir bot o'z long-polling tsiklini yuradi, lekin hammasi bitta db'ga yozadi.
 var botRuns = /* @__PURE__ */ new Map();
+// Har bir bot uchun ushlab turgan polling qulfi kaliti.
+var botLocks = /* @__PURE__ */ new Map();
+// Faol long-poll so'rovini bekor qilish uchun (SIGTERM paytida muhim).
+var botAborts = /* @__PURE__ */ new Map();
+// Polling tsikllarining promise'i — qulf bo'shatishdan oldin tugashini kutamiz.
+var botLoops = /* @__PURE__ */ new Map();
 async function pollLoop(bot, token) {
+  const ac = botAborts.get(bot.id);
+  const signal = ac ? ac.signal : null;
   for (; ; ) {
-    if (botRuns.get(bot.id) !== token) return;
-    const r = await tgWith(bot, "getUpdates", { offset: bot.offset || 0, timeout: 30, allowed_updates: ["message", "callback_query"] }, 45e3);
+    // 1) Bekor qilingan bo'lsa — yangi getUpdates REJALASHTIRILMAYDI.
+    if (botRuns.get(bot.id) !== token || (signal && signal.aborted)) return "stopped";
+    // 2) So'rov abort signali bilan yuboriladi — SIGTERM paytida darhol uziladi.
+    const r = await tgWith(bot, "getUpdates", { offset: bot.offset || 0, timeout: 30, allowed_updates: ["message", "callback_query"] }, 45e3, signal);
+    // 3) Abort natijasi xato sifatida logga yozilmaydi.
+    if (r.aborted || (signal && signal.aborted)) return "stopped";
     if (!r.ok) {
       bot.lastError = r.description || "getUpdates xatosi";
       console.error(`[${botName(bot)}] getUpdates xato:`, r.description);
@@ -2622,12 +4894,19 @@ function authed(req) {
   if (req.auth) return true;
   const h = req.headers.authorization || "";
   if (!ADMIN_PASSWORD || !h.startsWith("Basic ")) return false;
+  // Basic header ham login himoyasidan o'tadi: aks holda parolni cheksiz
+  // sinash mumkin bo'lardi (faqat /login cheklangan edi).
+  const ip = clientIp(req);
+  if (loginGate(ip, "").blocked) return false;
   const pass = Buffer.from(h.slice(6), "base64").toString().split(":").slice(1).join(":");
   const a = Buffer.from(pass), b = Buffer.from(ADMIN_PASSWORD);
   if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+    loginOk(ip, "");
     req.auth = { username: "admin", role: "owner", exp: Date.now() + SESSION_TTL };
     return true;
   }
+  loginFail(ip, "");
+  audit({ auth: { username: "anonim", role: "guest" }, headers: { "x-forwarded-for": ip } }, "login_failed", "basic");
   return false;
 }
 function readRawBody(req, limit = 2e4) {
@@ -2959,29 +5238,84 @@ function botView(b) {
     createdAt: b.createdAt || ""
   };
 }
-function cancelOrderAdmin(o) {
+async function cancelOrderAdmin(o) {
+  // Instanslararo kritik bo'lim: `o` va egasining balansi qulf ostida qayta
+  // o'qiladi, takroriy qaytim tekshiruvi eng so'nggi jurnal bo'yicha bajariladi.
+  const txRes = await withStateTx(async () => {
+  if (!o || o.status !== "active") return { ok: false, reason: "already_closed", refundCredits: 0, refundableUnits: 0 };
   const owner = userById(o.userId);
   const { refundableUnits, refundCredits } = calculateRefundAmount(o);
-  o.cancelledQuantity += refundableUnits;
+  const refundKey = `refund:${o.id}`;
+  // Takroriy qaytim: shu buyurtma uchun jurnal yozuvi bor bo'lsa balans
+  // o'zgartirilmaydi (idempotency kaliti — yagona haqiqat manbai).
+  if (refundCredits > 0 && db.transactions.some((t) => t.idempotencyKey === refundKey)) {
+    auditSys("refund_rejected", o.id, "already_refunded");
+    return { ok: false, reason: "duplicate", refundCredits: 0, refundableUnits: 0 };
+  }
+  // `reserved` yetarliligini tekshirish. `Math.max(0, ...)` bilan yashirish
+  // taqiqlanadi: yetmayotgan bo'lsa amal rad etiladi va hech narsa o'zgarmaydi.
+  if (owner && refundCredits > 0 && Number(owner.credits.reserved) + 1e-9 < refundCredits) {
+    auditSys("refund_rejected", o.id, `reserved_insufficient reserved=${owner.credits.reserved} required=${refundCredits}`);
+    console.error(`Qaytim rad etildi (${o.id}): reserved ${owner.credits.reserved} < refund ${refundCredits}`);
+    return { ok: false, reason: "reserved_insufficient", refundCredits: 0, refundableUnits: 0, reserved: owner.credits.reserved, required: refundCredits };
+  }
+  const endOp = opStart("arefund");
+  const snap = owner ? creditsSnapshot(owner) : null;
+  const before = {
+    status: o.status,
+    cancelledQuantity: Number(o.cancelledQuantity) || 0,
+    pendingQuantity: Number(o.pendingQuantity) || 0,
+    completedAt: o.completedAt || "",
+    activeOrders: owner ? Number(owner.activeOrdersCount) || 0 : 0
+  };
+  const dest = destOf(o.destinationId);
+  const destBefore = dest ? { pendingSubscriptions: dest.pendingSubscriptions, pendingFollowers: dest.pendingFollowers } : null;
+  const touched = db.tasks.filter((t) => t.orderId === o.id && OPEN.has(t.status)).map((t) => t.id);
+  o.cancelledQuantity = before.cancelledQuantity + refundableUnits;
   o.pendingQuantity = 0;
   o.status = "cancelled";
   o.completedAt = nowStr();
   if (owner) {
-    owner.credits.reserved = Math.max(0, owner.credits.reserved - refundCredits);
+    owner.credits.reserved -= refundCredits;
     owner.credits.available += refundCredits;
     owner.credits.refunded += refundCredits;
-    owner.activeOrdersCount = Math.max(0, owner.activeOrdersCount - 1);
-    addTx(owner, refundCredits, "order_refund", `Admin bekor qildi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: `refund:${o.id}` });
-    notify(owner, `\u21A9\uFE0F Buyurtmangiz admin tomonidan bekor qilindi.\n${esc(o.destinationTitle)}\n${refundableUnits} ta uchun <b>${refundCredits}</b> kredit qaytarildi.`);
+    owner.activeOrdersCount = Math.max(0, before.activeOrders - 1);
+    if (refundCredits > 0)
+      addTx(owner, refundCredits, "order_refund", `Admin bekor qildi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: refundKey });
   }
-  for (const t of db.tasks) if (t.orderId === o.id && OPEN.has(t.status)) t.status = "CANCELLED";
-  const dest = destOf(o.destinationId);
+  for (const t of db.tasks) if (touched.includes(t.id)) t.status = "CANCELLED";
   if (dest) {
     if (dest.pendingSubscriptions !== void 0) dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - refundableUnits);
     if (dest.pendingFollowers !== void 0) dest.pendingFollowers = Math.max(0, dest.pendingFollowers - refundableUnits);
   }
-  save();
-  return { refundCredits, refundableUnits };
+  endOp();
+  // Pul amali — xabardan OLDIN darhol saqlanadi. Saqlanmasa hammasi qaytariladi.
+  if (!(await flushOrRollback(() => {
+    o.status = before.status;
+    o.cancelledQuantity = before.cancelledQuantity;
+    o.pendingQuantity = before.pendingQuantity;
+    o.completedAt = before.completedAt;
+    if (owner) {
+      creditsRestore(owner, snap);
+      owner.activeOrdersCount = before.activeOrders;
+    }
+    if (dest && destBefore) {
+      dest.pendingSubscriptions = destBefore.pendingSubscriptions;
+      dest.pendingFollowers = destBefore.pendingFollowers;
+    }
+    for (const t of db.tasks) if (touched.includes(t.id)) t.status = "PENDING";
+  }))) {
+    auditSys("refund_save_failed", o.id, "rolled_back");
+    return { ok: false, reason: "save_failed", refundCredits: 0, refundableUnits: 0 };
+  }
+  return { ok: true, refundCredits, refundableUnits, title: o.destinationTitle };
+  });
+  const res = txRes.ok && txRes.value ? txRes.value : { ok: false, reason: "save_failed", refundCredits: 0, refundableUnits: 0 };
+  const resOwner = res.ok ? userById(o.userId) : null;
+  if (!res.ok) return res;
+  if (resOwner)
+    notify(resOwner, `\u21A9\uFE0F Buyurtmangiz admin tomonidan bekor qilindi.\n${esc(res.title)}\n${res.refundableUnits} ta uchun <b>${res.refundCredits}</b> kredit qaytarildi.`);
+  return { ok: true, refundCredits: res.refundCredits, refundableUnits: res.refundableUnits };
 }
 // --- Moderatsiya skaneri (spec §16) ---
 // Bot kanal kontentini o'qiy olmaydi — faqat nom/username, tezlik va shikoyat
@@ -3820,7 +6154,7 @@ var server = http.createServer((req, res) => {
             return { ok: true };
           } else if (b.action === "pause_orders") {
             for (const o of db.orders.filter((o2) => o2.userId === u.id && o2.status === "active")) {
-              cancelOrderAdmin(o);
+              await cancelOrderAdmin(o);
             }
             u.moderation.push({ at: nowStr(), action: "pause_orders", note });
             audit(req, "mod_pause_orders", uid, note);
@@ -3939,7 +6273,13 @@ var server = http.createServer((req, res) => {
               jobsPending: db.verificationJobs.filter((j) => j.status === "PENDING").length,
               jobsDone: db.verificationJobs.filter((j) => j.status === "DONE").length,
               dueNow: db.verificationJobs.filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= Date.now()).length,
-              events: db.membershipEvents.length
+              events: db.membershipEvents.length,
+              taskChecksPending: db.verificationJobs.filter((j) => j.jobType === "TASK_CHECK" && j.status === "PENDING").length
+            },
+            // Oxirgi tekshiruv nosozliklari: haqiqiy Telegram javobi bilan.
+            verifyErrors: {
+              total: (db.verifyErrors || []).length,
+              recent: (db.verifyErrors || []).slice(-10).reverse()
             },
             bots: botsList().map((b) => ({
               id: b.id,
@@ -4096,10 +6436,13 @@ var server = http.createServer((req, res) => {
           if (b.action === "credits") {
             const n = Number(b.amount);
             if (!Number.isFinite(n) || !n) throw new Error("Kredit soni noto'g'ri");
-            t.credits.available = Math.max(0, t.credits.available + n);
-            addTx(t, n, "admin_adjustment", "Admin panel");
+            // `client_token` — panel har bosishda yangi token yuboradi; takroriy
+            // yuborish (double-click/retry) ikkinchi marta qo'llanmaydi.
+            const who = (req.auth && req.auth.username) || "admin";
+            const key = b.client_token ? `adminadj:panel:${who}:${String(b.client_token).slice(0, 64)}` : "";
+            const adj = await applyAdminAdjust(t, n, `Admin panel (${who})`, key);
+            if (!adj.ok) throw new Error(adj.reason === "save_failed" ? "Saqlashda xatolik — amal qaytarildi" : adj.reason === "insufficient" ? "Balans manfiy bo'lib qoladi" : "Bu amal allaqachon bajarilgan");
             notify(t, `\u{1F4B0} Hisobingiz ${n > 0 ? "+" : ""}${n} kreditga o'zgartirildi.`);
-            save();
             return { balance: t.credits.available };
           }
           if (b.action === "block" || b.action === "unblock") {
@@ -4119,6 +6462,8 @@ var server = http.createServer((req, res) => {
               verifiedSubscribers: c.verifiedSubscribers,
               pendingSubscriptions: c.pendingSubscriptions,
               botHasAdminRights: !!c.botHasAdminRights,
+              status: c.status || "active",
+              pausedAt: c.pausedAt || "",
               createdAt: c.createdAt
             }))
           };
@@ -4126,11 +6471,20 @@ var server = http.createServer((req, res) => {
         case "channel": {
           const c = db.channels.find((x) => x.id === String(b.id || ""));
           if (!c) throw new Error("Kanal topilmadi");
+          // Pauza/rezyume (spec §7): yangi vazifa berilmaydi, buyurtmalar va
+          // navbat tarixi saqlanadi, qayta faollashtirilganda davom etadi.
+          if (b.action === "pause" || b.action === "resume") {
+            c.status = b.action === "pause" ? "paused" : "active";
+            c.pausedAt = b.action === "pause" ? nowStr() : "";
+            save();
+            audit(req, b.action === "pause" ? "channel_pause" : "channel_resume", c.title);
+            return { id: c.id, status: c.status };
+          }
           // Avval faol buyurtmalarni bekor qilib, kreditini egasiga qaytaramiz —
           // aks holda o‘chirilgan kanal uchun kredit “band” bo‘lib qoladi.
           let refunded = 0;
           for (const o of db.orders.filter((x) => x.destinationId === c.id && x.status === "active")) {
-            refunded += cancelOrderAdmin(o).refundCredits || 0;
+            refunded += (await cancelOrderAdmin(o)).refundCredits || 0;
           }
           db.channels = db.channels.filter((x) => x.id !== c.id);
           for (const t of db.tasks) if (t.destinationId === c.id && OPEN.has(t.status)) t.status = "CANCELLED";
@@ -4192,7 +6546,16 @@ var server = http.createServer((req, res) => {
           const o = db.orders.find((x) => x.id === String(b.id || ""));
           if (!o) throw new Error("Buyurtma topilmadi");
           if (o.status !== "active") throw new Error("Bu buyurtma allaqachon yopilgan");
-          return cancelOrderAdmin(o);
+          const res = await cancelOrderAdmin(o);
+          if (!res.ok) {
+            const msg = res.reason === "reserved_insufficient"
+              ? `Band qilingan kredit yetarli emas (reserved ${res.reserved}, kerak ${res.required}) — qaytim rad etildi`
+              : res.reason === "duplicate" ? "Bu buyurtma uchun qaytim allaqachon berilgan"
+              : res.reason === "save_failed" ? "Saqlashda xatolik — qaytim qaytarildi"
+              : "Buyurtma yopilgan";
+            throw new Error(msg);
+          }
+          return res;
         }
         case "tasks": {
           const byStatus = {};
@@ -4239,7 +6602,9 @@ var server = http.createServer((req, res) => {
         case "settings": {
           const s = S();
           if (!isPost) {
-            const { news, bots, ...rest } = s;
+            // Bot tokeni hech qachon brauzerga qaytarilmaydi (superadmin ham
+            // ko'rmaydi — panel faqat niqoblangan tokenni ko'rsatadi).
+            const { news, bots, telegramBotToken, ...rest } = s;
             return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
           }
           for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardInstagramSelfConfirmed", "creditRewardReferral", "creditPerSubscriber"]) {
@@ -4321,11 +6686,39 @@ function startKeepAlive() {
 async function startBotLoop(bot) {
   if (!bot || !bot.enabled || !bot.token) return false;
   if (botRuns.has(bot.id)) return true;
+  // Bitta token uchun faqat BITTA polling jarayoni bo'lishi shart (spec §1).
+  // Qulfni olmasak — getUpdates umuman boshlanmaydi, aks holda Telegram
+  // eski instansning long-poll so'rovini "Conflict" bilan uzadi.
+  const lockKey = pollLockKey(bot.token);
+  // Advisory lock bir sessiyada qayta olinishi mumkin, shuning uchun bir xil
+  // tokenga ega ikkinchi botni jarayon ichida ham to'xtatamiz.
+  for (const [otherId, otherKey] of botLocks) {
+    if (otherKey === lockKey && otherId !== bot.id) {
+      bot.pollLock = "duplicate";
+      bot.online = false;
+      bot.lastError = "token boshqa bot bilan bir xil";
+      return false;
+    }
+  }
+  if (!await tryLock(lockKey)) {
+    if (bot.pollLock !== "other") {
+      bot.pollLock = "other";
+      bot.online = false;
+      bot.lastError = "boshqa instans polling qilmoqda";
+      console.log(`[${botName(bot)}] qulf boshqa instansda — bu instans getUpdates qilmaydi`);
+    }
+    return false;
+  }
+  bot.pollLock = "mine";
   const stopToken = Symbol("stop");
   botRuns.set(bot.id, stopToken);
+  botLocks.set(bot.id, lockKey);
   const me = await tgWith(bot, "getMe");
   if (!me.ok) {
     botRuns.delete(bot.id);
+    botLocks.delete(bot.id);
+    bot.pollLock = "";
+    await releaseLock(lockKey);
     bot.lastError = me.description || "getMe xatosi";
     bot.online = false;
     // Har 30 soniyada urinish logni to‘ldirib yubormasin — 5 daqiqa kutamiz
@@ -4355,31 +6748,79 @@ async function startBotLoop(bot) {
   }
   save();
   console.log(`Bot ${botName(bot)} ishga tushdi (long polling${bot.role === "main" ? "" : ", ishchi bot"})`);
-  pollLoop(bot, stopToken).catch((e) => console.error(`[${botName(bot)}] pollLoop xatosi:`, e));
+  botAborts.set(bot.id, new AbortController());
+  const loop = pollLoop(bot, stopToken).catch((e) => console.error(`[${botName(bot)}] pollLoop xatosi:`, e));
+  botLoops.set(bot.id, loop);
   return true;
 }
-function stopBotLoop(id) {
-  botRuns.delete(id);
+// To'g'ri to'xtatish tartibi (spec A):
+//  1) yangi getUpdates rejalashtirilmaydi (botRuns dan chiqadi),
+//  2) faol long-poll abort qilinadi,
+//  3) tsikl tugashi KUTILADI,
+//  4) SHUNDAN KEYIN qulf bo'shatiladi.
+var POLL_STOP_WAIT_MS = 6e3;
+async function stopBotPolling(id) {
+  const key = botLocks.get(id);
   const b = botById(id);
   if (b) b.online = false;
+  botRuns.delete(id);
+  const ac = botAborts.get(id);
+  if (ac) {
+    botAborts.delete(id);
+    try {
+      ac.abort();
+    } catch {}
+  }
+  const loop = botLoops.get(id);
+  botLoops.delete(id);
+  if (loop) {
+    await Promise.race([
+      loop.catch(() => {}),
+      new Promise((r) => setTimeout(r, POLL_STOP_WAIT_MS))
+    ]);
+  }
+  botLocks.delete(id);
+  if (key) await releaseLock(key);
+}
+function stopBotLoop(id) {
+  stopBotPolling(id).catch((e) => console.error("Pollingni to'xtatishda xato:", e.message));
 }
 async function startAllBots() {
   const list = botsList().filter((b) => b.enabled && b.token);
+  // Bir xil token ikki marta qo'shilgan bo'lsa — faqat bittasi polling qiladi,
+  // aks holda ular bir-birini "Conflict" bilan uzib turadi.
+  const seen = /* @__PURE__ */ new Set();
   for (const b of list) {
+    const h = crypto.createHash("sha1").update(b.token).digest("hex");
+    if (seen.has(h)) {
+      b.pollLock = "duplicate";
+      b.lastError = "token boshqa bot bilan bir xil";
+      console.error(`[${botName(b)}] token boshqa bot bilan bir xil — polling qilinmaydi`);
+      continue;
+    }
+    seen.add(h);
     if (botRuns.has(b.id)) continue;
     await startBotLoop(b);
   }
   if (!list.length) console.error("Bot tokeni yo'q - faqat veb panel ishlaydi. Panelda bot tokenini qo'shing.");
 }
 async function restartBots() {
-  for (const id of [...botRuns.keys()]) stopBotLoop(id);
-  await new Promise((r) => setTimeout(r, 1200));
+  await Promise.all([...botRuns.keys()].map((id) => stopBotPolling(id).catch(() => {})));
   await startAllBots();
 }
 var shuttingDown = false;
 async function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
+  // 1+2+3) Yangi getUpdates rejalashtirilmaydi, faol long-poll abort qilinadi
+  // va tsikl tugashi KUTILADI. Qulf 4-qadamda, polling to'xtagandan keyin
+  // bo'shaydi — yangi instans faqat shundan keyin polling boshlay oladi.
+  const ids = [...botRuns.keys()];
+  if (ids.length) {
+    console.log(`${sig}: polling to'xtatilmoqda (${ids.length} ta bot)...`);
+    await Promise.all(ids.map((id) => stopBotPolling(id).catch(() => {})));
+    console.log("Polling to'xtadi, qulf bo'shatilmoqda...");
+  }
   console.log(`${sig}: holat saqlanmoqda...`);
   if (saveTimer) {
     clearTimeout(saveTimer);
@@ -4388,6 +6829,12 @@ async function shutdown(sig) {
   saveNow();
   try {
     await Promise.race([persist(), new Promise((r) => setTimeout(r, 8e3))]);
+  } catch {
+  }
+  // Polling qulfini darhol bo'shatamiz: yangi instans long-poll tugashini
+  // kutmasdan boshlasin (aks holda "Conflict" paydo bo'ladi).
+  try {
+    await releaseAllLocks();
   } catch {
   }
   try {
@@ -4399,6 +6846,16 @@ async function shutdown(sig) {
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => {
   shutdown(sig);
 });
+// Test hook: Windows'da OS signalini ushlab bo'lmaydi, shuning uchun test
+// xuddi shu `shutdown()` yo'lini stdin orqali ishga tushirishi mumkin.
+// Productionda bu env yo'q — hech qanday qo'shimcha oqim ochilmaydi.
+if (process.env.SHUTDOWN_ON_STDIN === "1") {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (d) => {
+    if (String(d).trim() === "SIGTERM") shutdown("SIGTERM");
+  });
+  process.stdin.resume();
+}
 // Asosiy botni (env tokeni) bazadagi ro'yxatga bir marta yozib qo'yamiz.
 function botsInit() {
   const list = botsList();
@@ -4450,18 +6907,54 @@ function migrateSettings() {
   save();
   console.log(`Sozlama: ro'yxat bonusi 0, kanal ulash bonusi ${s.creditRewardChannelLink}`);
 }
+// Eski nosoz yozuvlar: pullik kredit band qilingan (totalCost > 0), lekin
+// birlik narxi 0 bo'lgan buyurtmalar. Bunday buyurtmada tasdiqlash `reserved`
+// dan hech narsa yechmaydi va bekor qilishda qaytarish 0 bo'lib qoladi.
+// To'langan birliklar soniga qarab narx tiklanadi, qolgani bepul birlik
+// sifatida belgilanadi (foydalanuvchi yutqazmaydi, buxgalteriya yopiladi).
+function migrateOrderUnits() {
+  const unit = perSub();
+  let n = 0;
+  for (const o of db.orders) {
+    if (Number(o.unitCost) > 0) continue;
+    const cost = Number(o.totalCost) || 0;
+    if (!(cost > 0)) continue;
+    const req = Number(o.requestedQuantity) || 0;
+    const paid = Math.min(req, Math.floor(cost / unit));
+    const verified = Number(o.verifiedQuantity) || 0;
+    o.unitCost = unit;
+    // Tasdiqlangan birliklar `freeUnits` dan hisoblanadi (qaytarish formulasi
+    // shunga tayanadi), shuning uchun ular bepul qismdan ayriladi.
+    o.freeUnits = Math.max(0, req - paid - verified);
+    n++;
+    console.log(`Buyurtma tuzatildi: ${o.id} (${o.destinationTitle}) — ${paid} to'langan + ${o.freeUnits} bepul birlik`);
+  }
+  if (n) save();
+  return n;
+}
 async function main() {
   await openStore();
   botsInit();
   migrateSettings();
   migrateMemberships();
+  migrateOrderUnits();
+  // Eski RECHECK/CHECK_ERROR vazifalari uchun qayta urinish jobi yo'q bo'lsa
+  // yaratiladi — aks holda ular navbatda ham, ko'rinishda ham osilib qolardi.
+  const repaired = repairTaskChecks();
+  if (repaired) console.log(`Tekshiruv navbati tuzatildi: ${repaired} ta vazifa uchun qayta urinish jobi yaratildi`);
   save();
+  startLockHeartbeat();
   // Avvaldan yig‘ilgan kreditlar ham buyurtmaga aylansin (bir marta ishga tushishda).
   if (S().autoOrderCredits) {
-    let n = 0;
     // db.users — telegramId bo'yicha indekslangan siyrak massiv, shuning uchun
     // Object.values (for...of butun uzunlikni aylanib chiqib osilib qoladi).
-    for (const u of Object.values(db.users)) if (u && autoOrderFromBalance(u)) n++;
+    // Pul amali: bitta instanslararo tranzaksiyada.
+    const autoRes = await withStateTx(() => {
+      let k = 0;
+      for (const u of Object.values(db.users)) if (u && autoOrderFromBalance(u)) k++;
+      return k;
+    });
+    const n = autoRes.ok ? autoRes.value : 0;
     if (n) console.log(`Avtomatik buyurtma: ${n} foydalanuvchining balansi buyurtmaga aylantirildi`);
   }
   server.on("error", (e) => {
@@ -4473,15 +6966,19 @@ async function main() {
   startNewsScheduler();
   setInterval(() => hourlyReport().catch((e) => console.error(e)), 6e4);
   startBackupJob();
-  // Muddati kelgan a'zolik tekshiruvlari: cheklangan partiya, har 2 daqiqada.
-  setInterval(() => maintenance().catch((e) => console.error(e)), 2 * 6e4);
+  // Muddati kelgan a'zolik va vazifa tekshiruvlari: cheklangan partiya,
+  // har MAINTENANCE_SEC soniyada (testda qisqartiriladi).
+  var MAINTENANCE_SEC = Math.max(1, Number(process.env.MAINTENANCE_SEC) || 120);
+  setInterval(() => maintenance().catch((e) => console.error(e)), MAINTENANCE_SEC * 1e3);
+  var BOT_START_RETRY_SEC = Math.max(1, Number(process.env.BOT_START_RETRY_SEC) || 30);
   setInterval(() => {
+    if (shuttingDown) return;
     for (const b of botsList()) {
       if (!b.enabled || !b.token || botRuns.has(b.id)) continue;
       if (b.nextRetryAt && Date.now() < b.nextRetryAt) continue;
       startBotLoop(b).catch((e) => console.error(e));
     }
-  }, 3e4);
+  }, BOT_START_RETRY_SEC * 1e3);
   await startAllBots();
 }
 main().catch((e) => {

@@ -312,6 +312,10 @@ async function api(path, body) {
 }
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => Number(n || 0).toLocaleString('ru-RU');
+// Har bir pul amali uchun yangi idempotency tokeni (double-click himoyasi).
+function newToken() {
+  try { return crypto.randomUUID(); } catch (e) { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+}
 function table(head, rows) {
   const body = Array.isArray(rows) ? rows.join('') : String(rows == null ? '' : rows);
   if (!body) return '<div class="empty">Ma\'lumot yo\'q</div>';
@@ -417,7 +421,7 @@ async function loadUsers() {
     if (v === null || v.trim() === '') return;
     const n = Number(v);
     if (!Number.isFinite(n) || n === 0) return toast('Son kiriting', true);
-    try { await api('/api/admin/user', { telegramId: el.dataset.cred, action: 'credits', amount: n }); toast('Balans o\'zgardi'); loadUsers(); }
+    try { await api('/api/admin/user', { telegramId: el.dataset.cred, action: 'credits', amount: n, client_token: newToken() }); toast('Balans o\'zgardi'); loadUsers(); }
     catch (e) { toast(e.message, true); }
   });
   document.querySelectorAll('[data-block]').forEach(el => el.onclick = async () => {
@@ -437,9 +441,19 @@ async function loadChannels() {
   $('#ch-list').innerHTML = table(['Kanal', 'Egasi', 'Obunachilar', 'Kutilmoqda', 'Holat', ''], d.items.map(c =>
     '<tr><td><b>' + esc(c.title) + '</b><div class="mono muted">@' + esc(c.username) + '</div></td>' +
     '<td>' + esc(c.ownerName) + '</td><td>' + money(c.verifiedSubscribers) + '</td><td>' + money(c.pendingSubscriptions) + '</td>' +
-    '<td>' + (c.botHasAdminRights ? '<span class="pill ok">admin</span>' : '<span class="pill err">admin emas</span>') + '</td>' +
+    '<td>' + (c.botHasAdminRights ? '<span class="pill ok">admin</span>' : '<span class="pill err">admin emas</span>') +
+    (c.status === 'paused' ? ' <span class="pill warn">pauza</span>' : c.status === 'disconnected' ? ' <span class="pill err">uzilgan</span>' : '') + '</td>' +
     '<td><button class="btn ghost sm" data-ch-grant="' + esc(c.id) + '" title="Kredit talab qilmasdan obunachi vazifasi qo\'shadi">Vazifa qo\'shish</button> ' +
+    '<button class="btn ghost sm" data-ch-pause="' + esc(c.id) + '" data-paused="' + (c.status === 'paused' ? '1' : '0') + '">' + (c.status === 'paused' ? 'Davom ettirish' : 'Pauza') + '</button> ' +
     '<button class="btn danger sm" data-ch-del="' + esc(c.id) + '">O\'chirish</button></td></tr>').join(''));
+  document.querySelectorAll('[data-ch-pause]').forEach(el => el.onclick = async () => {
+    const paused = el.dataset.paused === '1';
+    if (!paused && !confirm('Kanal pauza qilinsinmi? Yangi vazifa va buyurtmalar to\'xtaydi, mavjudlari saqlanadi.')) return;
+    el.disabled = true;
+    try { await api('/api/admin/channel', { id: el.dataset.chPause, action: paused ? 'resume' : 'pause' }); toast(paused ? 'Kanal davom ettirildi' : 'Kanal pauza qilindi'); loadChannels(); }
+    catch (e) { toast(e.message, true); }
+    el.disabled = false;
+  });
   document.querySelectorAll('[data-ch-grant]').forEach(el => el.onclick = async () => {
     const v = prompt('Necha obunachi vazifasi qo\'shilsin? (10–10000, kredit talab qilinmaydi)', '50');
     if (v === null || v.trim() === '') return;
@@ -593,7 +607,7 @@ async function loadReferrals() {
   $('#ref-list').innerHTML = table(['Taklif qilgan', 'Taklif qilingan', 'Vazifa', 'Bonus', 'Kanal'], d.items.map(r =>
     '<tr><td>' + esc(r.referrer) + '</td><td>' + esc(r.referred) + '</td>' +
     '<td>' + (r.verified ? '<span class="pill ok">ha</span>' : '<span class="pill">yo‘q</span>') + '</td>' +
-    '<td>' + (r.bonusIssued ? money(r.bonusAmount) + ' (' + r.units + ' ta)' : '<span class="muted">kutilmoqda</span>') + '</td>' +
+    '<td>' + (r.bonusIssued ? money(r.bonusAmount) + (r.units ? ' (' + r.units + ' ta)' : ' (hamyonga)') : '<span class="muted">kutilmoqda</span>') + '</td>' +
     '<td class="mono muted">' + esc(r.channel || '—') + '</td></tr>').join(''));
 }
 

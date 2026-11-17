@@ -7,6 +7,14 @@ services:
     runtime: node
     plan: free
     region: frankfurt
+    # BITTA instans. Ko'paytirish mumkin, LEKIN faqat `DATABASE_URL` berilgan
+    # bo'lsa: polling qulfi, scheduler qulfi va holat tranzaksiyasi PostgreSQL
+    # advisory lock'lariga tayanadi. Fayl rejimida ikki instans bir-birini
+    # "Conflict: terminated by other getUpdates" bilan uzadi.
+    numInstances: 1
+    # SIGTERM dan keyin long-poll'ni uzish + qulfni bo'shatish uchun vaqt
+    # (server.js `shutdown()`: abort → tsikl tugashini kutish → unlock).
+    maxShutdownDelaySeconds: 30
     buildCommand: npm ci --omit=dev
     startCommand: node server.js
     healthCheckPath: /healthz
