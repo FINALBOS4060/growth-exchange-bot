@@ -67,8 +67,16 @@ function pollLockKey(token) {
   return "poll:" + sha1(token);
 }
 
+// server.js `tryLock(key)` ichida `hashtextextended("gxb:" + key, 0)` ishlatiladi.
+// Prefiks tushib qolsa, fingerprint boshqa kalitni ko'rsatadi va qulf
+// "BO'SH" deb noto'g'ri xabar beriladi (haqiqiy productionda esa qulf
+// ushlab turilgan bo'ladi).
+function pollLockName(token) {
+  return "gxb:" + pollLockKey(token);
+}
+
 async function lockKeyFingerprint(pool, token) {
-  const key = pollLockKey(token);
+  const key = pollLockName(token);
   const r = await pool.query("SELECT hashtextextended($1, 0) AS k", [key]);
   return { key, value: String(r.rows[0].k), fp: sha1(key).slice(0, 12) };
 }
@@ -259,8 +267,14 @@ async function main() {
         const online = bots.filter((b) => b.online);
         console.log(`  /api/admin/health: storage=${h.storage}, online botlar=${online.length}/${bots.length}`);
         for (const b of bots) console.log(`     ${b.id}: online=${b.online} enabled=${b.enabled} ${b.lastError ? `xato="${b.lastError}"` : ""}`);
-        console.log(`  ${ok(online.length <= 1)} bir vaqtda faol polling instanslari: ${online.length}`);
-        if (online.length > 1) fail(`bir vaqtda ${online.length} bot instansi online`);
+        // Bir nechta bot (asosiy + ishchi) bir vaqtda online bo'lishi NORMAL:
+        // har biri o'z tokeni, o'z qulfi bilan polling qiladi. Dublikat
+        // instans faqat BITTA token uchun ikki sessiya bo'lsa xavfli — buni
+        // yuqoridagi pg_locks tekshiruvi (holders > 1) aniqlaydi.
+        const ids = online.map((b) => b.id);
+        const dupIds = ids.filter((id, i) => ids.indexOf(id) !== i);
+        console.log(`  ${ok(!dupIds.length)} faol polling botlari: ${online.length} (${ids.join(", ") || "-"})`);
+        if (dupIds.length) fail(`bir xil bot id ikki marta online: ${dupIds.join(", ")}`);
         if (h.memberships) console.log(`  memberships: ${JSON.stringify(h.memberships)}`);
       }
     } catch (e) {
