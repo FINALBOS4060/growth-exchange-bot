@@ -4939,7 +4939,7 @@ function markChannelPermissionLost(dest, reason, checkedAt) {
 // ham Telegram'ga yuklama tushmaydi (spec §8).
 var CH_ADMIN_SWEEP_HOURS = 6;
 var CH_ADMIN_SWEEP_BATCH = 5;
-async function channelHealthSweep() {
+async function channelHealthSweep(opts) {
   // Sweep uchun ALOHIDA advisory qulf (`gxb:sweep`). U `gxb:scheduler`,
   // `gxb:state`, `gxb:poll:*` kalitlari bilan to'qnashmaydi. Qulfni olmagan
   // instans darhol 0 qaytaradi — parallel sweep va ikki marta Telegram
@@ -4947,10 +4947,16 @@ async function channelHealthSweep() {
   // uzilishi bilan avtomatik tushadi).
   if (!await tryLock("sweep")) return 0;
   try {
+  // `force` — operator qo'lda qayta tekshirishni so'radi (6 soatlik navbatni
+  // kutmasdan). `channelId` — faqat bitta kanal (ichki id). Ikkalasi ham
+  // ixtiyoriy; sukut bo'yicha odatdagi tarqatilgan tekshiruv ishlaydi.
+  const force = !!(opts && opts.force);
+  const only = String((opts && opts.channelId) || "");
   const now = Date.now();
   const due = db.channels
     .filter((c) => !c.disconnectedAt && c.channelId)
-    .filter((c) => !c.lastAdminCheckAt || now - (Date.parse(c.lastAdminCheckAt) || 0) > CH_ADMIN_SWEEP_HOURS * 36e5)
+    .filter((c) => !only || c.id === only)
+    .filter((c) => force || !c.lastAdminCheckAt || now - (Date.parse(c.lastAdminCheckAt) || 0) > CH_ADMIN_SWEEP_HOURS * 36e5)
     .sort((a, b) => (Date.parse(a.lastAdminCheckAt || 0) || 0) - (Date.parse(b.lastAdminCheckAt || 0) || 0));
   if (!due.length) return 0;
   let checked = 0;
@@ -6663,10 +6669,12 @@ var server = http.createServer((req, res) => {
             return { created, jobs: opsJobStats() };
           }
           if (action === "sweep") {
-            const n = await channelHealthSweep();
+            const force = !!b.force;
+            const channelId = String(b.channelId || "");
+            const n = await channelHealthSweep({ force, channelId });
             touchOps("sweep", n);
-            audit(req, "ops_sweep", String(n));
-            return { checked: n, channels: opsChannelStats() };
+            audit(req, "ops_sweep", `${n}${force ? " force" : ""}${channelId ? " " + channelId : ""}`);
+            return { checked: n, forced: force, channels: opsChannelStats() };
           }
           if (action === "hourly") {
             await hourlyReport();

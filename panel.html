@@ -270,6 +270,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
         <button class="btn" data-ops="run_jobs">Navbatni ishga tushirish</button>
         <button class="btn ghost" data-ops="repair_task_checks">TASK_CHECK joblarini tiklash</button>
         <button class="btn ghost" data-ops="sweep">Kanallar admin tekshiruvi</button>
+        <button class="btn ghost" data-ops="sweep_force">Majburiy qayta tekshirish</button>
         <button class="btn ghost" data-ops="hourly">Soatlik hisobot</button>
         <button class="btn ghost" data-ops="ledger">Ledger audit (o'qish)</button>
         <button class="btn ghost" id="ops-backup">Zaxira nusxa</button>
@@ -277,7 +278,8 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
       <div class="muted" style="margin-top:10px;font-size:12px;line-height:1.7">
         «Navbatni ishga tushirish» — muddati kelgan TASK_CHECK / RECHECK joblarini bajaradi (retryAt hisobga olinadi).<br>
         «TASK_CHECK joblarini tiklash» — jobi yo'q CHECK_ERROR vazifalar uchun <b>bitta</b> persistent job yaratadi, dublikat yaratmaydi; ular oddiy FIFO navbatiga qaytmaydi.<br>
-        «Kanallar admin tekshiruvi» — navbatdagi kanallarni asosiy va ishchi botlar tokeni bilan tekshiradi (6 soatlik oyna, 5 talik partiya).
+        «Kanallar admin tekshiruvi» — navbatdagi kanallarni asosiy va ishchi botlar tokeni bilan tekshiradi (6 soatlik oyna, 5 talik partiya).<br>
+        «Majburiy qayta tekshirish» — o‘sha partiyani 6 soatlik muddatni kutmasdan hozir tekshiradi (bitta bot admin bo‘lsa — kanal tiklanadi).
       </div>
     </div>
     <div class="box"><h3>Botlar va polling</h3><div id="ops-bots"></div></div>
@@ -753,7 +755,7 @@ async function loadHealth() {
 }
 
 /* ---------- operatsiyalar ---------- */
-const OPS_NAMES = { run_jobs: 'Navbat ishga tushirildi', repair_task_checks: 'Joblar tiklandi', sweep: 'Kanal tekshiruvi', hourly: 'Soatlik hisobot', ledger: 'Ledger audit' };
+const OPS_NAMES = { run_jobs: 'Navbat ishga tushirildi', repair_task_checks: 'Joblar tiklandi', sweep: 'Kanal tekshiruvi', sweep_force: 'Majburiy tekshiruv bajarildi', hourly: 'Soatlik hisobot', ledger: 'Ledger audit' };
 function opsLog(v) {
   $('#ops-log').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
 }
@@ -795,10 +797,12 @@ async function loadOps() {
 document.querySelectorAll('[data-ops]').forEach(el => el.onclick = async () => {
   const action = el.dataset.ops;
   if (action === 'repair_task_checks' && !confirm('Jobi yo‘q CHECK_ERROR vazifalar uchun bitta persistent job yaratilsinmi?')) return;
+  const force = action === 'sweep_force';
+  if (force && !confirm('Navbatdagi 5 ta kanal 6 soatlik muddatni kutmasdan hozir qayta tekshirilsinmi?')) return;
   el.disabled = true;
   opsLog('bajarilmoqda…');
   try {
-    const d = await api('/api/admin/ops', { action });
+    const d = await api('/api/admin/ops', force ? { action: 'sweep', force: true } : { action });
     opsLog(d);
     toast(OPS_NAMES[action] || 'Bajarildi');
     if (action !== 'ledger') loadOps().catch(() => {});

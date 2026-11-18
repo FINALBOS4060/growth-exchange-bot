@@ -40,7 +40,8 @@ check("`run_jobs` limitni cheklaydi", /Math\.min\(500, Math\.max\(1,/.test(ops))
 check("`repair_task_checks` → repairTaskChecks()", /await withStateTx\(async \(\) => repairTaskChecks\(\)\)/.test(ops));
 check("`repair_task_checks` yozuvni KUTADI", /const saved = await flushSaveAwaited\(\);/.test(ops));
 check("`repair_task_checks` saqlamasa xato beradi", /if \(!saved\) throw new Error/.test(ops));
-check("`sweep` → channelHealthSweep()", /await channelHealthSweep\(\)/.test(ops));
+check("`sweep` → channelHealthSweep()", /await channelHealthSweep\(\{ force, channelId \}\)/.test(ops));
+check("`sweep` majburiy rejimni uzatadi", /const force = !!b\.force;/.test(ops) && /const n = await channelHealthSweep\(\{ force, channelId \}\)/.test(ops));
 check("`hourly` → hourlyReport()", /await hourlyReport\(\)/.test(ops));
 check("`ledger` faqat o'qish", /if \(action === "ledger"\) return \{ ledger: ledgerReport\(\) \};/.test(ops));
 
@@ -94,7 +95,8 @@ for (const a of ["run_jobs", "repair_task_checks", "sweep", "hourly", "ledger"])
   check(`panel: amal tugmasi ${a}`, panel.includes(`data-ops="${a}"`));
 }
 check("panel: loadOps ro'yxatga ulangan", /ops: loadOps/.test(panel));
-check("panel: handler POST yuboradi", /api\('\/api\/admin\/ops', \{ action \}\)/.test(panel));
+check("panel: handler POST yuboradi", /api\('\/api\/admin\/ops', force \?/.test(panel));
+check("panel: majburiy tekshirish tugmasi", /data-ops="sweep_force"/.test(panel) && /force \? \{ action: 'sweep', force: true \}/.test(panel));
 check("panel: `ops` ruxsati `health`", /ops: 'health'/.test(panel));
 check("panel: bot qulfi ko'rsatiladi", /b\.pollLock/.test(panel));
 

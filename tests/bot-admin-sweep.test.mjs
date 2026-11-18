@@ -65,7 +65,12 @@ const seed = {
   channels: [
     chan("ch-sweep1", "-3201", "Mixed", "mixed_chan"),
     chan("ch-sweep2", "-3202", "AllErrors", "allerr_chan"),
-    chan("ch-sweep3", "-3203", "Healthy", "healthy_chan")
+    chan("ch-sweep3", "-3203", "Healthy", "healthy_chan"),
+    // Majburiy (force) tekshiruv uchun: holat allaqachon `permission_lost`,
+    // lekin `lastAdminCheckAt` YANGI — oddiy 6 soatlik sweep uni chetlab
+    // o'tadi, force esa darhol tekshiradi.
+    { ...chan("ch-sweep4", "-3204", "Forced", "forced_chan"), status: "permission_lost",
+      botHasAdminRights: false, botAdminStatus: "bot_not_admin", lastAdminCheckAt: nowIso() }
   ],
   igProfiles: [], orders: [], tasks: [], transactions: [], memberships: [], membershipEvents: [],
   verificationJobs: [], sponsorMemberships: [], notifPeriods: [], complaints: [], referrals: [],
@@ -90,7 +95,8 @@ fs.writeFileSync(STATE, JSON.stringify({
   chats: {
     mixed_chan: { id: -3201, title: "Mixed" },
     allerr_chan: { id: -3202, title: "AllErrors" },
-    healthy_chan: { id: -3203, title: "Healthy" }
+    healthy_chan: { id: -3203, title: "Healthy" },
+    forced_chan: { id: -3204, title: "Forced" }
   },
   members: {},
   botMembers: {
@@ -100,9 +106,10 @@ fs.writeFileSync(STATE, JSON.stringify({
     "777000": {
       "-3201|777000": "server",
       "-3202|777000": "server",
-      "-3203|777000": "administrator"
+      "-3203|777000": "administrator",
+      "-3204|777000": "left"
     },
-    "777001": { "-3201|777001": "left", "-3202|777001": "timeout" },
+    "777001": { "-3201|777001": "left", "-3202|777001": "timeout", "-3204|777001": "administrator" },
     "777002": { "-3201|777002": "left", "-3202|777002": "server" }
   }
 }));
@@ -234,6 +241,32 @@ async function main() {
   check("tiklangan kanalga buyurtma qabul qilindi",
     readDb().orders.some((o) => o.destinationId === "ch-sweep1"),
     JSON.stringify(readDb().orders.map((o) => o.destinationId)));
+
+  /* ---------- 7. Force sweep: 6 soatlik oynani kutmasdan qayta tekshirish ---------- */
+  const c7a = chById("ch-sweep4");
+  check("yangi tekshirilgan kanal oddiy sweep'da o'tkazib yuboriladi", c7a.status === "permission_lost",
+    JSON.stringify({ status: c7a.status, at: c7a.lastAdminCheckAt }));
+  const lr = await fetch(BASE + "/login", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "owner", password: "testpass" })
+  });
+  const ck = (lr.headers.get("set-cookie") || "").split(";")[0];
+  const ops = (body) => fetch(BASE + "/api/admin/ops", {
+    method: "POST",
+    headers: { cookie: ck, "content-type": "application/json", origin: BASE },
+    body: JSON.stringify(body)
+  }).then((r) => r.json());
+  const plain = await ops({ action: "sweep" });
+  await sleep(300);
+  check("oddiy sweep yangi kanalni tekshirmaydi", chById("ch-sweep4").status === "permission_lost",
+    JSON.stringify({ checked: plain.checked, status: chById("ch-sweep4").status }));
+  const forced = await ops({ action: "sweep", force: true });
+  await sleep(600);
+  const c7b = chById("ch-sweep4");
+  check("force sweep kanalni tekshirdi", forced.checked >= 1, JSON.stringify(forced));
+  check("force sweep: bitta ishchi bot admin bo'lsa kanal active",
+    c7b.status === "active" && c7b.botHasAdminRights === true && c7b.botAdminBotId === "bot-worker1",
+    JSON.stringify({ status: c7b.status, ok: c7b.botHasAdminRights, bot: c7b.botAdminBotId }));
 
   srv.stdout.removeAllListeners();
   srv.stderr.removeAllListeners();
