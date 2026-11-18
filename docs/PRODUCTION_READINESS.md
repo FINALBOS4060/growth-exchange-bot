@@ -391,32 +391,24 @@ test:       APP_ENV=test · TELEGRAM_API_BASE=http://127.0.0.1:3997
 | `APP_ENV=test` va `DATABASE_URL` = production bazasi | `exit 1` |
 | `APP_ENV` yo'q | `test` deb hisoblanadi (xavfsiz default) |
 
-**Qavat 2 — transport allowlist (`lib/tg-transport.js`):**
-barcha Telegram so'rovlari bitta funksiyadan o'tadi:
+**Qavat 2 — yagona transport:** barcha Telegram so'rovlari `server.js` dagi
+`tgWith()` orqali, bitta `API` bazasiga (`TELEGRAM_API_BASE`) yuboriladi.
+`APP_ENV=test` bo'lsa bazani loopback mock'ka majburan bog'laydi (startup
+guard), shuning uchun boshqa host'ga chiqish yo'li qolmaydi.
 
-```js
-function tgUrl(method) {
-  const base = process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
-  if (APP_ENV === "test" && !isLoopback(base)) throw new Error("TEST_EGRESS_BLOCKED");
-  return `${base}/bot${token}/${method}`;
-}
-```
+**Qavat 3 — news jadvali allowlist:** `startNewsScheduler()` haqiqiy kanalga
+post qiladi, shu sababli u faqat `RENDER`, `ALWAYSDATA_ENTRY` yoki
+`ALLOW_NEWS_SCHEDULER=1` bo'lganda yoqiladi. Lokal ishga tushirishda muhitda
+`NEWS_BOT_TOKEN` qolib ketgan bo'lsa ham production kanaliga post ketmaydi
+(logda: `News bot jadvali o'chirilgan (lokal rejim)`)..
 
-Test rejimida `globalThis.fetch` o'raladi: ruxsat etilgan origin — faqat
-`TELEGRAM_API_BASE`; boshqa har qanday host (`api.telegram.org` ham) →
-`ERR_TG_TEST_EGRESS` va `tests/artifacts/blocked-egress.jsonl` ga yoziladi.
-Barcha o'tgan so'rovlar `tests/artifacts/tg-calls.jsonl` ga yoziladi.
+### 5.2 Isbot (`tests/env-guard.test.mjs`)
 
-**Qavat 3 (ixtiyoriy, CI):** test jarayoni `HTTP_PROXY=http://127.0.0.1:1`
-bilan ishga tushiriladi — tashqi tarmoq umuman yo'q; mock esa loopback.
-
-### 5.2 Isbot (T20, T21)
-
-- `tg-calls.jsonl` bo'sh emas (so'rovlar haqiqatan bo'lgan);
-- har bir yozuvdagi host **faqat** `127.0.0.1:<mock port>`;
-- `api.telegram.org` ga birorta yozuv yo'q;
-- `fetch("https://api.telegram.org/bot.../getMe")` test rejimida **throw** qiladi;
-- `APP_ENV=test` + real token bilan jarayon ishga tushmaydi (exit 1).
+- `APP_ENV=test` + `TELEGRAM_API_BASE` yo'q yoki `api.telegram.org` → jarayon exit 1;
+- `APP_ENV=test` + haqiqiy token → exit 1 (`TEST_EGRESS_BLOCKED`);
+- `APP_ENV=test` + loopback mock + `TESTTOKEN` → ishga tushadi, news jadvali o'chirilgan;
+- `APP_ENV` yo'q (production) → xatti-harakat o'zgarmaydi;
+- lokal rejimda `News bot @...` getMe chaqirilmaydi va post jadvali yoqilmaydi.
 
 ### 5.3 Sirlar
 

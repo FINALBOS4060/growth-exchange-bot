@@ -1,17 +1,19 @@
 name: Keep-alive
 
 # Render free instance 15 daqiqa trafiksiz uxlab qoladi (bot ham to'xtaydi).
-# Bu job har 30 daqiqada /healthz ni chaqirib, servisni uyg'oq tutadi.
+# Bu job har 30 daqiqada /healthz ni chaqirib, ASOSIY va STANDBY servislarni
+# uyg'oq tutadi. Ikkalasi ham uyg'oq bo'lsa ham, polling faqat bittasida
+# bo'ladi (PostgreSQL advisory lock) — ikkinchisi har 30 soniyada qulfni
+# qayta so'raydi va asosiy to'xtaganda o'zi ishga tushadi.
 #
 # Nega 30 daqiqa: private repolarda Actions kvotasi oyiga 2000 daqiqa.
-# Har ishga tushish 1 daqiqa deb hisoblanadi, shuning uchun 10 daqiqalik
-# jadval (~4320 daqiqa/oy) kvotani oy o'rtasida tugatib qo'yardi.
-# Har 30 daqiqa = ~1440 daqiqa/oy — kvota ichida qoladi.
 # Asosiy uyg'otish baribir ilova ichida: KEEP_ALIVE=1 (har 10 daqiqa).
 #
-# Manzilni o'zgartirish: Settings -> Secrets and variables -> Actions -> Variables
-#   APP_URL = https://sizning-servis.onrender.com
-# (o'zgaruvchi bo'lmasa, quyidagi standart manzil ishlatiladi)
+# Manzillarni sozlash: Settings -> Secrets and variables -> Actions -> Variables
+#   APP_URL          = https://sizning-servis.onrender.com
+#   APP_URL_STANDBY  = https://growth-exchange-bot-standby.onrender.com
+# O'zgaruvchi bo'lmasa: APP_URL uchun standart manzil ishlatiladi,
+# APP_URL_STANDBY bo'sh bo'lsa — o'tkazib yuboriladi.
 
 on:
   schedule:
@@ -25,22 +27,36 @@ concurrency:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: /healthz ni uyg'otish
+      - name: /healthz ni uyg'otish (asosiy + standby)
         env:
           APP_URL: ${{ vars.APP_URL || 'https://growth-exchange-bot.onrender.com' }}
+          APP_URL_STANDBY: ${{ vars.APP_URL_STANDBY }}
         run: |
-          url="${APP_URL%/}/healthz"
-          echo "So'rov: $url"
-          for i in 1 2 3; do
-            code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 60 "$url" || echo 000)
-            echo "urinish $i -> HTTP $code ($(cat /tmp/body 2>/dev/null | head -c 120))"
-            if [ "$code" = "200" ]; then
-              echo "Servis uyg'oq."
-              exit 0
+          set -u
+          failed=0
+          ping() {
+            label="$1"; url="$2"
+            if [ -z "$url" ]; then
+              echo "[$label] manzil berilmagan — o'tkazib yuborildi"
+              return 0
             fi
-            sleep 20
-          done
-          echo "::error::/healthz 3 urinishda ham javob bermadi (oxirgi kod: $code)"
-          exit 1
+            url="${url%/}/healthz"
+            echo "[$label] so'rov: $url"
+            code=000
+            for i in 1 2 3; do
+              code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 60 "$url" || echo 000)
+              echo "[$label] urinish $i -> HTTP $code ($(head -c 120 /tmp/body 2>/dev/null))"
+              if [ "$code" = "200" ]; then
+                echo "[$label] servis uyg'oq."
+                return 0
+              fi
+              sleep 20
+            done
+            echo "::error::[$label] /healthz 3 urinishda ham javob bermadi (oxirgi kod: $code)"
+            failed=1
+          }
+          ping "asosiy" "$APP_URL"
+          ping "standby" "$APP_URL_STANDBY"
+          exit "$failed"

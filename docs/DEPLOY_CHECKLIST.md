@@ -14,9 +14,11 @@
 |---|---|---|---|
 | 1 | Ikki instansda bir xil `client_token` bilan buyurtma (E2E) | **PASS** | `tests/pg-order-token-multi.test.mjs` 22/22 |
 | 2 | PostgreSQL mosligi (production versiyasi) | **NOT TESTED** (production bazasi yo'q) / **PASS** (skript, embedded PG 18) | `scripts/pg-compat-check.mjs`, `tests/pg-compat.test.mjs` 19/19 |
-| 3 | Render konfiguratsiyasi (instans, health, env, baza, qulflar) | **PASS** | `tests/render-config.test.mjs` 26/26 |
+| 3 | Render konfiguratsiyasi (instans, health, env, baza, qulflar) | **PASS** | `tests/render-config.test.mjs` 43/43 |
 | 4 | Backup va rollback (tiklash alohida test muhitida) | **PASS** | `tests/backup-restore.test.mjs` 28/28 |
 | 5 | Deploydan keyingi read-only tekshiruvlar | **PASS** | `scripts/post-deploy-check.mjs`, `tests/rollback-archive.test.mjs` 53/53 |
+| 6 | Panel «Operatsiyalar» (joblar, sweep, ledger, backup, eksport) | **PASS** | `tests/admin-ops.test.mjs` 40/40 |
+| 7 | Test/lokal izolyatsiya (`APP_ENV=test`, news jadvali guard) | **PASS** | `tests/env-guard.test.mjs` 14/14 |
 
 ### 1. Bir xil `client_token` — ikki instans (E2E)
 
@@ -112,7 +114,7 @@ tarixini **o'chirmaydi**. Yagona sxema o'zgarishi —
 cd growth-exchange-bot
 
 # ── 0) Testlar (production'ga ta'sir qilmaydi) ──
-npm test                       # 23 fayl, hammasi PASS bo'lishi shart
+npm test                       # 32 fayl, hammasi PASS bo'lishi shart
 
 # ── 1) Production holatini o'qish (yozuvsiz) ──
 export DATABASE_URL='postgres://…'      # env'dan, chatga yozilmaydi
@@ -124,7 +126,7 @@ node -e "…POST /api/admin/backup…"      # yoki panel → Health → Zaxira
 # yoki: SELECT id, created_at FROM app_backup ORDER BY id DESC LIMIT 3;
 
 # ── 3) Deploy (Render) ──
-git push origin master                  # avtomatik deploy (yoki Dashboard → Manual Deploy)
+git push origin main                    # avtomatik deploy (yoki Dashboard → Manual Deploy)
 # Deploy oynasida: eski instans SIGTERM oladi → polling to'xtaydi → qulf
 # bo'shaydi → yangi instans qulfni oladi (maxShutdownDelaySeconds=30).
 
@@ -167,6 +169,21 @@ tekshiradi (hech narsa yozmaydi; `--save-baseline` faqat lokal fayl yozadi):
 8. **A'zolik qayta tekshiruvi** — `ACTIVE` a'zoliklarda `nextCheckAt` bor,
    `RECHECK` joblar kechikmagan, bir vaqtga to'planmagan (staggered).
 9. **A'zolik voqealari** — `membershipEvents` baseline bilan bir xil yoki o'sgan.
+
+### 6.1 Paneldan tekshirish (qo'shimcha, faqat o'qiydi)
+
+Panel → **🧰 Operatsiyalar**:
+
+1. **Onlayn botlar** kartasi — `1 / 1` (yoki `n / n` ishlchi botlar bilan); `pollLock` ustunida `mine`.
+2. **TASK_CHECK / CHECK_ERROR** kartalari — `jobisiz vazifa: 0` (deploydan keyingi `repairTaskChecks()`
+   natijasi `post-deploy-check` bilan bir xil bo'lishi shart).
+3. **Ledger farqi** — `0`; «Ledger audit» tugmasi faqat o'qiydi, hech narsani tuzatmaydi.
+4. **Ruxsat yo'qolgan kanal** — kutilgan qiymat bilan teng.
+5. «Zaxira nusxalar» ro'yxatida yangi yozuv bor.
+
+**Muhim env izohi:** productionda `APP_ENV` **ko'rsatilmaydi** yoki `production` bo'ladi.
+`APP_ENV=test` faqat mock Telegram (`TELEGRAM_API_BASE` loopback) bilan ishlaydi va
+haqiqiy token bilan jarayon umuman ishga tushmaydi.
 
 ## 7. Muammo bo'lsa
 

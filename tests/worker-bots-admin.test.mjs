@@ -3,12 +3,14 @@
 // Tekshiriladi:
 //  1. Kanal qo'shilganda BARCHA yoqilgan botlar (asosiy + ishchi) o'z tokeni va
 //     o'z `botId` si bilan tekshiriladi; natija `channel.botAdmins` ga yoziladi.
-//  2. Ishchi bot admin bo'lmasa — egasiga tushunarli ogohlantirish beriladi.
-//  3. Ishchi bot admin bo'lmasa — yangi buyurtma yaratilmaydi, kredit band qilinmaydi.
-//  4. 6 soatlik sweep har bir botni alohida tekshiradi va faqat asosiy botning
-//     huquqi yo'qolganida kanalni yopadi (tarix o'chmaydi).
-//  5. Ishchi bot qo'shilgach keyingi tekshiruv uni "ok" deb belgilaydi va
-//     buyurtma yaratish mumkin bo'ladi.
+//  2. Ishchi bot admin bo'lmasa — egasiga MA'LUMOT sifatida ogohlantiriladi
+//     («kamida bitta bot yetarli» qoidasi), kanal ishlayveradi.
+//  3. Kamida bitta bot (bu yerda asosiy) admin bo'lsa — buyurtma yaratiladi va
+//     kredit bir marta band qilinadi.
+//  4. 6 soatlik sweep har bir botni alohida tekshiradi va faqat HECH BIR bot
+//     admin bo'lmaganda kanalni yopadi (tarix o'chmaydi).
+//  5. Ishchi bot admin bo'lgach keyingi tekshiruv uni "ok" deb belgilaydi,
+//     ro'yxat tozalanadi va buyurtma yana qabul qilinadi.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 
@@ -176,22 +178,25 @@ async function main() {
     JSON.stringify(ch && ch.botAdmins["bot-worker"]));
   check("ro'yxatda ishchi bot ko'rsatildi", !!ch && (ch.botsMissingAdmin || []).some((l) => /worker_bot/.test(l)),
     JSON.stringify(ch && ch.botsMissingAdmin));
+  check("kanal ishlatadigan bot — asosiy bot", !!ch && ch.botAdminBotId === "bot-main", ch && ch.botAdminBotId);
   check("egasiga ogohlantirish berildi", /bo‘lmagan botlar|blogan botlar/i.test(allText(UID)) || /worker_bot/.test(allText(UID)),
     lastText(UID));
 
-  /* ---------- 2. Ishchi botsiz buyurtma yaratilmaydi ---------- */
+  /* ---------- 2. «Bitta bot yetarli»: asosiy bot admin → buyurtma yaratiladi ---------- */
   const cid = ch.id;
   const before = readDb().users["9001"].credits.available;
   await click("ord:" + cid, 800);
   await say("50", 900);
   await click("ordok:" + (readDb().users["9001"].state || {}).token, 2200);
   const db2 = readDb();
-  check("ishchi bot admin emas → buyurtma yaratilmadi",
-    db2.orders.filter((o) => o.destinationId === cid).length === 0,
-    JSON.stringify(db2.orders.map((o) => o.destinationId)));
-  check("kredit band qilinmadi", db2.users["9001"].credits.available === before && db2.users["9001"].credits.reserved === 0,
+  const ord1 = db2.orders.find((o) => o.destinationId === cid);
+  check("bitta (asosiy) bot yetarli — buyurtma yaratildi", !!ord1 && ord1.status === "active",
+    JSON.stringify(db2.orders.map((o) => o.status)));
+  check("kredit bir marta band qilindi",
+    db2.users["9001"].credits.available === before - 50 && db2.users["9001"].credits.reserved === 50,
     `available ${before} → ${db2.users["9001"].credits.available}, reserved ${db2.users["9001"].credits.reserved}`);
-  check("foydalanuvchiga sabab tushuntirildi", /worker_bot|botlar/i.test(allText(UID)), lastText(UID));
+  check("buyurtma rad etilmadi (ishchi botning admin emasligi bloklamaydi)",
+    !/Buyurtma yaratilmadi/.test(allText(UID)), lastText(UID));
 
   /* ---------- 3. 6 soatlik sweep: har bir bot alohida ---------- */
   const swept = await waitDb(() => {
@@ -217,12 +222,17 @@ async function main() {
   check("ishchi bot admin bo'lgach recheck ok", !!ch3 && ch3.botAdmins["bot-worker"].ok === true,
     JSON.stringify(ch3 && ch3.botAdmins));
   check("ro'yxat tozalandi", !!ch3 && (ch3.botsMissingAdmin || []).length === 0, JSON.stringify(ch3 && ch3.botsMissingAdmin));
-  const ord = db3.orders.find((o) => o.destinationId === cid);
-  check("buyurtma yaratildi", !!ord && ord.status === "active", JSON.stringify(ord && ord.status));
-  check("kredit band qilindi", db3.users["9001"].credits.reserved === 50 && db3.users["9001"].credits.available === before - 50,
+  const ords = db3.orders.filter((o) => o.destinationId === cid);
+  check("buyurtma yaratildi", ords.length === 2 && ords.every((o) => o.status === "active"),
+    JSON.stringify(ords.map((o) => o.status)));
+  check("kredit ikkinchi marta ham bir marta band qilindi",
+    db3.users["9001"].credits.reserved === 100 && db3.users["9001"].credits.available === before - 100,
     `available ${db3.users["9001"].credits.available}, reserved ${db3.users["9001"].credits.reserved}`);
-  check("reservation tranzaksiyasi yozildi",
-    db3.transactions.some((t) => t.type === "order_spend" && t.orderId === (ord && ord.id) && t.amount === -50));
+  check("har bir buyurtma uchun bitta reservation yozuvi",
+    ords.length === 2 && ords.every((o) => db3.transactions.filter((t) => t.type === "order_spend" && t.orderId === o.id && t.amount === -50).length === 1),
+    JSON.stringify(db3.transactions.map((t) => t.type + ":" + t.orderId)));
+  check("kanal ishlatadigan bot tasdiqlangan botlardan biri",
+    !!ch3 && [ch3.botAdminBotId === "bot-main", ch3.botAdminBotId === "bot-worker"].includes(true), ch3 && ch3.botAdminBotId);
 
   srv.kill();
   mock.kill();

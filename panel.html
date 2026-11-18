@@ -103,6 +103,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
     <button data-tab="bots">🤖 Botlar (tokenlar)</button>
     <button data-tab="settings">⚙️ Sozlamalar</button>
     <div class="grp">Tizim</div>
+    <button data-tab="ops">🧰 Operatsiyalar</button>
     <button data-tab="health">💚 Tizim sog'lig'i</button>
     <button data-tab="audit">📜 Audit jurnali</button>
     <button data-tab="admins">🔐 Adminlar va rollar</button>
@@ -259,6 +260,32 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
     <div class="box"><h3>Kunlar bo'yicha</h3><div id="an-days"></div></div>
   </section>
 
+  <section class="tab" id="tab-ops">
+    <h2>Operatsiyalar</h2>
+    <div class="sub">Terminaldan qilinadigan texnik ishlar shu yerdan bajariladi. Balans va ledger <b>o'zgartirilmaydi</b> — ledger amali faqat o'qiydi. Har bir amal audit jurnaliga yoziladi.</div>
+    <div class="cards" id="ops-cards"></div>
+    <div class="box">
+      <h3>Amallar</h3>
+      <div class="row">
+        <button class="btn" data-ops="run_jobs">Navbatni ishga tushirish</button>
+        <button class="btn ghost" data-ops="repair_task_checks">TASK_CHECK joblarini tiklash</button>
+        <button class="btn ghost" data-ops="sweep">Kanallar admin tekshiruvi</button>
+        <button class="btn ghost" data-ops="hourly">Soatlik hisobot</button>
+        <button class="btn ghost" data-ops="ledger">Ledger audit (o'qish)</button>
+        <button class="btn ghost" id="ops-backup">Zaxira nusxa</button>
+      </div>
+      <div class="muted" style="margin-top:10px;font-size:12px;line-height:1.7">
+        «Navbatni ishga tushirish» — muddati kelgan TASK_CHECK / RECHECK joblarini bajaradi (retryAt hisobga olinadi).<br>
+        «TASK_CHECK joblarini tiklash» — jobi yo'q CHECK_ERROR vazifalar uchun <b>bitta</b> persistent job yaratadi, dublikat yaratmaydi; ular oddiy FIFO navbatiga qaytmaydi.<br>
+        «Kanallar admin tekshiruvi» — navbatdagi kanallarni asosiy va ishchi botlar tokeni bilan tekshiradi (6 soatlik oyna, 5 talik partiya).
+      </div>
+    </div>
+    <div class="box"><h3>Botlar va polling</h3><div id="ops-bots"></div></div>
+    <div class="box"><h3>Ledger holati</h3><div id="ops-ledger"></div></div>
+    <div class="box"><h3>Oxirgi amal natijasi</h3><pre id="ops-log" style="white-space:pre-wrap;margin:0;font-size:12px;color:#b9c4d6">—</pre></div>
+    <div class="box"><h3>Zaxira nusxalar</h3><div id="ops-backups"></div></div>
+  </section>
+
   <section class="tab" id="tab-health">
     <h2>Tizim sog'lig'i</h2>
     <div class="sub" id="he-sub"></div>
@@ -339,6 +366,7 @@ function load(tab) {
      orders: loadOrders, tasks: loadTasks, complaints: loadComplaints, sponsors: loadSponsors,
      instagram: loadInstagram, referrals: loadReferrals, moderation: loadModeration, appeals: loadAppeals,
      analytics: loadAnalytics, health: loadHealth, audit: loadAudit, admins: loadAdmins,
+     ops: loadOps,
      settings: loadSettings }[tab] || (() => {}))().catch(e => toast(e.message, true));
 }
 
@@ -365,12 +393,33 @@ async function loadOverview() {
 }
 
 /* ---------- botlar ---------- */
+const ADMIN_PILL = {
+  ok: ['ok', 'admin'],
+  missing_permissions: ['warn', 'huquq yetarli emas'],
+  bot_not_admin: ['warn', 'admin emas'],
+  bot_not_found: ['err', 'kanal topilmadi'],
+  invalid_token: ['err', 'token yaroqsiz'],
+  api_error: ['warn', 'API xatosi'],
+  check_pending: ['warn', 'kutilmoqda']
+};
+function adminCell(b) {
+  if (!b.adminCheckedChannels) return '<span class="muted">tekshirilmagan</span>';
+  const p = ADMIN_PILL[b.adminStatus] || ['', b.adminStatus || '—'];
+  const at = b.adminLastCheckAt ? new Date(b.adminLastCheckAt).toLocaleString() : '—';
+  return '<span class="pill ' + p[0] + '">' + esc(p[1]) + '</span>' +
+    (b.adminStale ? ' <span class="pill err" title="Natija eskirgan — keyingi sweep yangilaydi">STALE</span>' : '') +
+    '<div class="muted" style="font-size:11px">' + b.adminChannels + '/' + b.adminCheckedChannels + ' kanalda' +
+    (b.adminNeedsAttention ? ' · ⚠️ e\'tibor' : '') + '</div>' +
+    '<div class="muted" style="font-size:11px">tekshirildi: ' + esc(at) + '</div>' +
+    (b.adminReason ? '<div class="muted mono" style="font-size:11px">' + esc(b.adminReason) + '</div>' : '');
+}
 async function loadBots() {
   const d = await api('/api/admin/bots');
-  $('#bots-list').innerHTML = table(['Bot', 'Token', 'Rol', 'Holat', 'Oxirgi xato', ''], d.bots.map(b =>
+  $('#bots-list').innerHTML = table(['Bot', 'Token', 'Rol', 'Admin tekshiruvi', 'Holat', 'Oxirgi xato', ''], d.bots.map(b =>
     '<tr><td><b>' + esc(b.label) + '</b>' + (b.botId ? '<div class="mono muted">ID ' + esc(b.botId) + '</div>' : '') + '</td>' +
     '<td class="mono muted">' + esc(b.tokenMasked) + '</td>' +
     '<td>' + (b.role === 'main' ? '<span class="pill ok">asosiy</span>' : '<span class="pill">ishchi</span>') + '</td>' +
+    '<td>' + adminCell(b) + '</td>' +
     '<td>' + (b.online ? '<span class="pill ok">onlayn</span>' : (b.enabled ? '<span class="pill warn">kutilmoqda</span>' : '<span class="pill err">o\'chiq</span>')) + '</td>' +
     '<td class="muted">' + esc(b.lastError || '—') + '</td>' +
     '<td>' + (b.role === 'main' ? '<span class="muted">env orqali</span>' :
@@ -703,6 +752,66 @@ async function loadHealth() {
   };
 }
 
+/* ---------- operatsiyalar ---------- */
+const OPS_NAMES = { run_jobs: 'Navbat ishga tushirildi', repair_task_checks: 'Joblar tiklandi', sweep: 'Kanal tekshiruvi', hourly: 'Soatlik hisobot', ledger: 'Ledger audit' };
+function opsLog(v) {
+  $('#ops-log').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+}
+async function loadOps() {
+  const d = await api('/api/admin/ops');
+  const j = d.jobs, ch = d.channels, l = d.ledger;
+  const online = d.polling.filter(b => b.online).length;
+  $('#ops-cards').innerHTML = [
+    ['Onlayn botlar', online + ' / ' + d.polling.length, online ? 'ok' : 'err', 'bitta polling qulfi'],
+    ['Kutilayotgan job', money(j.pending), j.due ? 'warn' : '', 'muddati kelgan: ' + money(j.due)],
+    ['TASK_CHECK', money(j.taskCheckPending), j.withoutJob ? 'warn' : '', 'jobisiz vazifa: ' + money(j.withoutJob)],
+    ['CHECK_ERROR vazifa', money(j.checkErrorTasks), j.checkErrorTasks ? 'warn' : 'ok', 'FIFO navbatidan ajratilgan'],
+    ['Ledger farqi', money(l.mismatched), l.mismatched ? 'err' : 'ok', 'manfiy balans: ' + money(l.negative)],
+    ['Ruxsat yo‘qolgan kanal', money(ch.permissionLost), ch.permissionLost ? 'err' : 'ok', 'jami: ' + money(ch.total)]
+  ].map(([k, v, tone, note]) => '<div class="card ' + tone + '"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="n">' + note + '</div></div>').join('');
+
+  $('#ops-bots').innerHTML = table(['Bot', 'Rol', 'Polling', 'Qulf', 'Oxirgi xato'], d.polling.map(b =>
+    '<tr><td><b>' + esc(b.label) + '</b>' + (b.username ? ' <span class="muted">@' + esc(b.username) + '</span>' : '') + '</td>' +
+    '<td>' + (b.role === 'main' ? '<span class="pill ok">asosiy</span>' : '<span class="pill">ishchi</span>') + '</td>' +
+    '<td>' + (b.online ? '<span class="pill ok">getUpdates</span>' : (b.enabled ? '<span class="pill warn">kutmoqda</span>' : '<span class="pill err">o‘chiq</span>')) + '</td>' +
+    '<td class="mono muted">' + esc(b.pollLock || '—') + '</td>' +
+    '<td class="muted">' + esc(b.lastError || '—') + '</td></tr>'));
+
+  const t = l.totals;
+  $('#ops-ledger').innerHTML =
+    '<div class="muted" style="margin-bottom:10px">Tekshirildi: <b>' + money(l.users) + '</b> foydalanuvchi · mos: <b>' + money(l.matched) + '</b> · farq: <b>' + money(l.mismatched) + '</b> · manfiy: ' + money(l.negative) + '</div>' +
+    table(['Manba', 'Available', 'Reserved', 'Total'], [
+      '<tr><td>Saqlangan hamyon</td><td>' + money(t.stored.available) + '</td><td>' + money(t.stored.reserved) + '</td><td>' + money(t.stored.total) + '</td></tr>',
+      '<tr><td>Ledger hisobi</td><td>' + money(t.calc.available) + '</td><td>' + money(t.calc.reserved) + '</td><td>' + money(t.calc.total) + '</td></tr>'
+    ]) +
+    ((l.problems || []).length ? '<div class="muted" style="margin-top:12px">Farq bor yozuvlar (diagnostika, avtomatik tuzatish YO‘Q):</div>' +
+      table(['Foydalanuvchi', 'Available farqi', 'Reserved farqi', 'Sabab'], l.problems.map(p =>
+        '<tr><td class="mono">' + esc(p.userId) + '</td><td>' + money(p.delta.available) + '</td><td>' + money(p.delta.reserved) + '</td><td class="muted" style="font-size:11px">' + esc((p.causes || []).join('; ')) + '</td></tr>')) : '<div class="muted" style="margin-top:10px">Farq yo‘q.</div>');
+
+  $('#ops-backups').innerHTML = '<div class="muted" style="margin-bottom:10px">Oxirgi zaxira: <b>' + esc(d.lastBackupAt || 'hech qachon') + '</b></div>' +
+    table(['Sana', 'Hajm (KB)', 'Sabab'], (d.backups || []).map(b => '<tr><td>' + esc(b.at) + '</td><td>' + money(b.sizeKb) + '</td><td class="muted">' + esc(b.reason || (b.name ? 'kunlik' : '—')) + '</td></tr>')) +
+    '<div class="muted" style="margin-top:10px;font-size:11px">Oxirgi amallar: ' + esc(JSON.stringify(d.opsMeta || {})) + '</div>';
+}
+document.querySelectorAll('[data-ops]').forEach(el => el.onclick = async () => {
+  const action = el.dataset.ops;
+  if (action === 'repair_task_checks' && !confirm('Jobi yo‘q CHECK_ERROR vazifalar uchun bitta persistent job yaratilsinmi?')) return;
+  el.disabled = true;
+  opsLog('bajarilmoqda…');
+  try {
+    const d = await api('/api/admin/ops', { action });
+    opsLog(d);
+    toast(OPS_NAMES[action] || 'Bajarildi');
+    if (action !== 'ledger') loadOps().catch(() => {});
+  } catch (e) { opsLog('XATO: ' + e.message); toast(e.message, true); }
+  el.disabled = false;
+});
+$('#ops-backup').onclick = async () => {
+  $('#ops-backup').disabled = true;
+  try { await api('/api/admin/backup', {}); toast('Zaxira nusxa olindi'); loadOps(); }
+  catch (e) { toast(e.message, true); }
+  $('#ops-backup').disabled = false;
+};
+
 /* ---------- audit ---------- */
 async function loadAudit() {
   const q = ($('#au-q').value || '').trim();
@@ -747,7 +856,7 @@ $('#ad-add').onclick = async () => {
 };
 
 /* ---------- start ---------- */
-const TAB_PERM = { instagram: 'instagram', referrals: 'referrals', moderation: 'moderation', appeals: 'moderation', analytics: 'analytics', health: 'health', audit: 'audit', admins: 'admins' };
+const TAB_PERM = { instagram: 'instagram', referrals: 'referrals', moderation: 'moderation', appeals: 'moderation', analytics: 'analytics', health: 'health', ops: 'health', audit: 'audit', admins: 'admins' };
 (async () => {
   try {
     const me = await api('/api/admin/me');

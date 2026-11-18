@@ -1,0 +1,56 @@
+# IKkinchi (standby) Render servisi — zaxira nusxa.
+#
+# Bu fayl `render.yaml` (asosiy servis) dan ALOHIDA: standby akkauntda
+# Blueprint yaratganda asosiy servisning dublikati yaratilmaydi.
+#
+# QOIDALAR (buzilmasin):
+#  1. `DATABASE_URL` — ASOSIY servisdagi bilan AYNAN bir xil bo'lishi shart.
+#     Boshqa baza = boshqa foydalanuvchilar/buyurtmalar; standby ma'lumotni
+#     ko'rmaydi va balanslar ikkiga bo'linadi.
+#  2. `TELEGRAM_BOT_TOKEN` / `NEWS_BOT_TOKEN` — asosiy bilan bir xil token.
+#     Ikki servis bir vaqtda polling qilmaydi: `gxb:poll:<sha1(token)>`
+#     PostgreSQL advisory lock faqat BITTA jarayonga getUpdates beradi.
+#     Ikkinchisi har 30 soniyada qulfni qayta so'raydi (BOT_START_RETRY_SEC)
+#     va asosiy to'xtaganda ~30 s ichida o'zi pollingni boshlaydi.
+#  3. `KEEP_ALIVE=1` — free instans 15 daqiqa trafiksiz uxlaydi; o'zini
+#     uyg'otib turadi. Qo'shimcha tashqi uyg'otish: `.github/workflows/
+#     keepalive.yml` (APP_URL va APP_URL_STANDBY ikkalasini ping qiladi).
+#
+# Ishlatish: standby akkauntda New + -> Blueprint -> repo -> shu fayl.
+# (Render Blueprint yo'lini sozlamalarda ko'rsatish mumkin: `render.standby.yaml`.)
+services:
+  - type: web
+    name: growth-exchange-bot-standby
+    runtime: node
+    plan: free
+    region: frankfurt
+    # Har token uchun bitta polling jarayoni qulf bilan kafolatlanadi, lekin
+    # instans soni 1 bo'lsin: ortiqcha jarayon faqat resurs sarflaydi.
+    numInstances: 1
+    maxShutdownDelaySeconds: 30
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Asosiy servisdagi qiymatlar bilan AYNAN bir xil bo'lishi shart.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: NEWS_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # ASOSIY servisdagi DATABASE_URL nusxasi (boshqa baza bo'lmasin!).
+      - key: DATABASE_URL
+        sync: false
+      # Panel paroli. Asosiy bilan bir xil bo'lishi shart emas, lekin
+      # failover paytida qulaylik uchun bir xil qiymat qo'yish tavsiya etiladi.
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: KEEP_ALIVE
+        value: "1"
+      - key: KEEP_ALIVE_SEC
+        value: "600"

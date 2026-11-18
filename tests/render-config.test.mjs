@@ -60,7 +60,11 @@ const optional = new Set([
   "PORT", "IP", "DATA_FILE", "TELEGRAM_API_BASE", "SHUTDOWN_ON_STDIN",
   "MAINTENANCE_SEC", "VERIFY_BATCH", "VERIFY_CONCURRENCY", "TG_CHECK_TIMEOUT_MS",
   "BOT_START_RETRY_SEC", "NEWS_RSS_QUERY", "ADMIN_EMAIL", "APP_URL", "RENDER_EXTERNAL_URL",
-  "KEEP_ALIVE_SEC"
+  "KEEP_ALIVE_SEC",
+  // Rejim bayroqlari: `APP_ENV=test` faqat testda; `RENDER`/`ALWAYSDATA_ENTRY`
+  // platforma o'zi qo'yadi; `ALLOW_NEWS_SCHEDULER` — ixtiyoriy (lokalda news
+  // jadvalini qo'lda yoqish uchun). Productionda yaml'da ko'rsatish shart emas.
+  "APP_ENV", "RENDER", "ALWAYSDATA_ENTRY", "ALLOW_NEWS_SCHEDULER"
 ]);
 const declared = [...yaml.matchAll(/- key:\s*([A-Z_0-9]+)/g)].map((m) => m[1]);
 const missing = used.filter((k) => !optional.has(k) && !declared.includes(k));
@@ -74,6 +78,32 @@ check("yaml'da haqiqiy token qiymati yo'q", !/\d{6,}:[A-Za-z0-9_-]{30,}/.test(ya
 
 /* 7. Free tier uchun keep-alive */
 check("KEEP_ALIVE=1 (free tier uxlab qolmasin)", /- key:\s*KEEP_ALIVE\s*\n\s*value:\s*"1"/.test(yaml));
+
+/* 8. STANDBY (zaxira) servis — `render.standby.yaml` */
+const standbyPath = "render.standby.yaml";
+const hasStandby = fs.existsSync(standbyPath);
+check("standby blueprint mavjud", hasStandby, standbyPath);
+const sb = hasStandby ? fs.readFileSync(standbyPath, "utf8") : "";
+check("standby: web + node", /type:\s*web/.test(sb) && /runtime:\s*node/.test(sb));
+check("standby: alohida nom", /name:\s*growth-exchange-bot-standby/.test(sb));
+check("standby: bir xil build/start/health",
+  /buildCommand:\s*npm ci --omit=dev/.test(sb) && /startCommand:\s*node server\.js/.test(sb) && /healthCheckPath:\s*\/healthz/.test(sb));
+check("standby: numInstances 1 + shutdown oynasi", /numInstances:\s*1/.test(sb) && /maxShutdownDelaySeconds:\s*30/.test(sb));
+check("standby: DATABASE_URL (asosiy bilan bir xil baza) `sync: false`",
+  /- key:\s*DATABASE_URL\s*\n\s*sync:\s*false/.test(sb));
+check("standby: KEEP_ALIVE=1", /- key:\s*KEEP_ALIVE\s*\n\s*value:\s*"1"/.test(sb));
+check("standby: haqiqiy token qiymati yo'q", !/\d{6,}:[A-Za-z0-9_-]{30,}/.test(sb));
+const primaryKeys = [...yaml.matchAll(/- key:\s*([A-Z_0-9]+)/g)].map((m) => m[1]);
+const standbyKeys = [...sb.matchAll(/- key:\s*([A-Z_0-9]+)/g)].map((m) => m[1]);
+const standbyMissing = [...new Set(primaryKeys)].filter((k) => !standbyKeys.includes(k));
+check("standby: asosiy servisning barcha env kalitlari bor", standbyMissing.length === 0, standbyMissing.join(", "));
+
+/* 9. Keep-alive ikkala servisni ham uyg'otadi */
+const ka = fs.readFileSync(".github/workflows/keepalive.yml", "utf8");
+check("keepalive: asosiy manzil", /APP_URL:\s*\$\{\{\s*vars\.APP_URL/.test(ka));
+check("keepalive: standby manzil", /APP_URL_STANDBY/.test(ka) && /ping "standby"/.test(ka));
+check("keepalive: ikkala ping ham /healthz", /\$\{url%\/\}\/healthz/.test(ka));
+check("keepalive: bittasi yiqilsa job yiqiladi", /failed=1/.test(ka) && /exit "\$failed"/.test(ka));
 
 const failed = results.filter((x) => !x.ok).length;
 console.log(`\n=== ${results.length - failed}/${results.length} PASS ===`);

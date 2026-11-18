@@ -52,6 +52,7 @@ const reply = (res, o) => {
 // Status → getChatMember javobi. Bu yerda har bir holat ATAYIN alohida:
 // ilova ularni bir-biridan farqlashi shart.
 function memberResponse(v, p) {
+  if (v === "unauthorized") return { ok: false, error_code: 401, description: "Unauthorized" };
   if (v === "rate" || String(v).startsWith("rate:")) {
     const after = Number(String(v).split(":")[1]) || 7;
     return { ok: false, error_code: 429, description: `Too Many Requests: retry after ${after}`, parameters: { retry_after: after } };
@@ -115,8 +116,13 @@ http
       if (method === "getChatMember") {
         const st = read(STATE, {});
         const key = String(p.chat_id) + "|" + String(p.user_id);
-        fs.appendFileSync(CALLS, JSON.stringify({ at: Date.now(), key }) + "\n");
-        const v = (st.members || {})[key] || "not_member";
+        const botKey = String(botMeta.id || BOT_ID);
+        // `botMembers` — BOTGA XOS holat: `{"777000": {"-1005|9101": "left"}}`.
+        // Bot kanalda admin emasligini (va boshqa bot admin ekanini) shu bilan
+        // sinaymiz; umumiy `members` esa hamma botlar uchun amal qiladi.
+        const perBot = (st.botMembers || {})[botKey] || {};
+        fs.appendFileSync(CALLS, JSON.stringify({ at: Date.now(), key, bot: botKey }) + "\n");
+        const v = perBot[key] !== void 0 ? perBot[key] : (st.members || {})[key] || "not_member";
         // Tarmoq sathidagi nosozliklar alohida simulyatsiya qilinadi.
         if (v === "netfail") return req.socket.destroy();
         if (v === "slow") return setTimeout(() => reply(res, { ok: false, error_code: 400, description: "Bad Request: late" }), 4e3);

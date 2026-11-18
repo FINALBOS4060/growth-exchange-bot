@@ -59,6 +59,44 @@ Bitta token bilan bir vaqtda faqat **bitta** long-polling ulanish bo'ladi.
 Eski alwaysdata'dagi botni **to'xtating**, aks holda ikkalasi navbat bilan `409 Conflict` oladi
 (logda `getUpdates xato: Conflict` ko'rinadi).
 
+### Ikkinchi (standby) servis — failover
+
+Zaxira uchun `render.standby.yaml` alohida blueprint sifatida ishlatiladi
+(asosiy `render.yaml` o'zgarmaydi, dublikat servis yaratilmaydi).
+
+Qanday ishlaydi:
+
+1. Ikkala servis ham **bitta** `DATABASE_URL` ga ulanadi — bitta foydalanuvchilar
+   bazasi, bitta buyurtmalar, bitta balans.
+2. Ikkalasi ham uyg'oq turadi (`KEEP_ALIVE=1` + GitHub Actions keep-alive ikkala
+   manzilni ping qiladi), lekin **faqat bittasi** polling qiladi:
+   `gxb:poll:<sha1(token)>` PostgreSQL advisory lock.
+3. Qulfni olmagan servis `online=false` bo'lib turadi va har
+   `BOT_START_RETRY_SEC` (30 s) da qulfni qayta so'raydi.
+4. Asosiy servis to'xtasa (deploy, crash, uxlab qolish) — qulf sessiya bilan
+   birga bo'shaydi va standby ~30 soniya ichida pollingni o'zi boshlaydi.
+   Qaytarish ham avtomatik: asosiy qaytsa, qulf kimda bo'lsa o'sha qoladi.
+
+Sozlash (standby akkauntda):
+
+1. GitHub repozitoriyni standby akkauntga ulang (repo **private** — GitHub App
+   ruxsati shart).
+2. **New + → Blueprint** → repo → blueprint yo'li `render.standby.yaml`.
+3. Env qiymatlarini **asosiy servisdagi bilan aynan bir xil** kiriting:
+   `TELEGRAM_BOT_TOKEN`, `NEWS_BOT_TOKEN`, `GEMINI_API_KEY`, `ADMIN_IDS`,
+   `DATABASE_URL` (bu eng muhimi — boshqa baza bo'lsa ma'lumot ikkiga bo'linadi).
+4. GitHub → Settings → Secrets and variables → Actions → Variables:
+   `APP_URL` (asosiy) va `APP_URL_STANDBY` (yangi servis URL'i).
+5. Deploydan keyin tekshirish (read-only):
+   - asosiy va standby `/healthz` → 200;
+   - `node scripts/post-deploy-check.mjs --url <standby> --baseline … --strict`
+     (asosiy bilan bir xil `DATABASE_URL` berilgan holda);
+   - loglarda `Conflict: terminated by other getUpdates` **bo'lmasligi** shart;
+   - ikkala panelda ham `online` botlar soni jami **1**.
+
+Muhim: `DATABASE_URL` berilmasa yoki har servisga alohida baza ulansa, standby
+failover emas — ikkinchi, bo'sh bot bo'lib qoladi. Bunday holatda deploy qilmang.
+
 ---
 
 ## 3. Doimiy saqlash (Postgres) — tavsiya etiladi
@@ -222,6 +260,24 @@ pause/freeze/IG/hisobot, broadcast). Yangiliklar boti — `/news`.
 
 Barcha raqamlar `db`dan olinadi; panelda soxta/demo ma'lumot yo'q.
 
+### Operatsiyalar (terminal o'rniga)
+
+Panel → **Operatsiyalar** bo'limi qo'lda bajariladigan texnik ishlarni bajaradi:
+
+| Amal | Nima qiladi |
+|---|---|
+| Navbatni ishga tushirish | Muddati kelgan `TASK_CHECK` / `RECHECK` joblarini bajaradi (`retryAt` hisobga olinadi) |
+| TASK_CHECK joblarini tiklash | Jobi yo'q `CHECK_ERROR` vazifalar uchun **bitta** persistent job yaratadi; dublikat yaratmaydi va ularni oddiy FIFO navbatiga qaytarmaydi |
+| Kanallar admin tekshiruvi | Navbatdagi kanallarni asosiy **va** ishchi botlar tokeni bilan tekshiradi (6 soatlik oyna, 5 talik partiya, `gxb:sweep` qulfi) |
+| Soatlik hisobot | Bajarilgan vazifalar bo'yicha yig'ma xabarni yuboradi (yangi tekshiruv boshlamaydi) |
+| Ledger audit | **Faqat o'qish**: hamyon ↔ jurnal farqini ko'rsatadi, hech qanday balansni tuzatmaydi |
+| Zaxira nusxa | `app_backup` / `data/backups` ga nusxa oladi |
+
+Shu bo'limda botlarning polling holati (`pollLock`: `mine` / `other`),
+job statistikasi va oxirgi amallar vaqti ham ko'rinadi. Har bir amal audit
+jurnaliga yoziladi. **Eksport** endi tozalangan: bot tokenlari, Gemini kaliti va
+parol xeshlari faylga tushmaydi.
+
 ### Bir nechta bot — bitta baza
 
 `@Obuna_2X_bot` asosiy bot (`TELEGRAM_BOT_TOKEN`). Panel → **Botlar** bo'limida
@@ -241,6 +297,14 @@ bir necha "kirish nuqtasi" qilish mumkin.
 `@Dunyo_Yangiliklari_Texno_bot` → kanal `@Dunyo_Yangiliklari_Texno`.
 Jadval: **06:00, 09:00, 12:00, 15:00, 18:00, 21:00** (Asia/Tashkent, har 3 soat).
 Model zanjiri + cooldown: bitta model limiti tugasa, keyingisiga o'tadi.
+
+**Jadval faqat hostingda yoqiladi:** `RENDER`, `ALWAYSDATA_ENTRY` yoki
+`ALLOW_NEWS_SCHEDULER=1` bo'lsa. Lokal ishga tushirishda `.env` da haqiqiy
+`NEWS_BOT_TOKEN` bo'lsa ham kanalga post ketmaydi (`News bot jadvali
+o'chirilgan (lokal rejim)`).
+
+**Test rejimi:** `APP_ENV=test` bo'lsa ilova faqat loopback mock'ka
+(`TELEGRAM_API_BASE`) ulanadi va haqiqiy token bilan umuman ishga tushmaydi.
 
 ### Diqqat: Render env o'zgaruvchilari
 

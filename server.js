@@ -5,6 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { summarizeRuntime } from "./scripts/lib/ledger-reconcile.mjs";
 
 // src/logic/growthLogic.ts
 function buildFifoQueueWithDeferred(existingQueue, deferredTasks, newIncomingTasks) {
@@ -123,6 +124,29 @@ try {
 }
 var TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 var API = process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
+var APP_ENV = String(process.env.APP_ENV || "").trim().toLowerCase();
+var IS_TEST_ENV = APP_ENV === "test";
+function isLoopbackUrl(base) {
+  try {
+    const h = new URL(base).hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  } catch {
+    return false;
+  }
+}
+// Xavfsizlik (spec D): `APP_ENV=test` — HAQIQIY Telegram va haqiqiy bot
+// tokenlari bilan ishlamaydigan rejim. Noto'g'ri sozlansa jarayon umuman
+// ishga tushmaydi (jimgina production'ga yozib yubormasligi uchun).
+function assertEnvSafe() {
+  if (!IS_TEST_ENV) return;
+  if (!process.env.TELEGRAM_API_BASE || !isLoopbackUrl(process.env.TELEGRAM_API_BASE)) {
+    throw new Error("TEST_EGRESS_BLOCKED: APP_ENV=test uchun TELEGRAM_API_BASE loopback mock bo'lishi shart");
+  }
+  const real = [process.env.TELEGRAM_BOT_TOKEN, process.env.NEWS_BOT_TOKEN]
+    .map((x) => String(x || "").trim())
+    .filter((x) => x && x !== "TESTTOKEN");
+  if (real.length) throw new Error("TEST_EGRESS_BLOCKED: test rejimida haqiqiy bot tokeni ishlatilmaydi");
+}
 var ADMIN_IDS = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
 var ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 var ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
@@ -209,7 +233,9 @@ var db = {
   lastExportAt: 0,
   lastBackupAt: 0,
   moderationFlags: [],
-  lastHour: 0
+  lastHour: 0,
+  // Panel «Operatsiyalar» bo'limi: oxirgi texnik amallar (faqat ko'rsatish).
+  opsMeta: {}
 };
 function applyLoadedState(loaded) {
   if (!loaded || typeof loaded !== "object") return false;
@@ -1181,8 +1207,8 @@ var notify = (u, text, extra = {}) => {
 // aralashtirilib ketardi.
 // A'zolik tekshiruvi uchun kutish vaqti (testda qisqartiriladi).
 var TG_CHECK_TIMEOUT_MS = Math.max(500, Number(process.env.TG_CHECK_TIMEOUT_MS) || 15e3);
-async function checkMemberInfo(chat, userId, ctx = {}) {
-  const r = await tg("getChatMember", { chat_id: chat, user_id: userId }, TG_CHECK_TIMEOUT_MS);
+async function checkMemberWith(bot, chat, userId, ctx = {}) {
+  const r = await tgWith(bot, "getChatMember", { chat_id: chat, user_id: userId }, TG_CHECK_TIMEOUT_MS);
   if (r.ok) {
     const st = r.result.status;
     if (["member", "administrator", "creator"].includes(st)) return { result: "member", reason: "" };
@@ -1193,11 +1219,11 @@ async function checkMemberInfo(chat, userId, ctx = {}) {
   const f = classifyTgFailure(r);
   // 401 — token muammosi. Bu hech qachon "obunadan chiqdi" ham, "bot admin
   // emas" ham emas; administratorga darhol xabar beriladi.
-  if (f.errKind === TG_ERR.AUTH) {
+  if (f.errKind === TG_ERR.AUTH && ctx.record !== false) {
     alertAdmins("tg_401", "\u26A0\uFE0F <b>Telegram 401 Unauthorized</b>\n\nBot tokeni yaroqsiz ko\u2018rinadi. Tekshiruvlar vaqtincha to\u2018xtatilmaydi, lekin natijalar ishonchsiz. Tokenni tekshiring: Render \u2192 Environment \u2192 TELEGRAM_BOT_TOKEN.");
   }
   // Har bir nosozlik to'liq diagnostika bilan bazaga va logga yoziladi.
-  const diag = recordVerifyFailure(tgDiag(r, "getChatMember", { chatId: chat, userId, ...ctx }));
+  const diag = ctx.record === false ? null : recordVerifyFailure(tgDiag(r, "getChatMember", { chatId: chat, userId, ...ctx }));
   return {
     result: "error",
     reason: f.errKind || TG_ERR.UNKNOWN,
@@ -1206,6 +1232,25 @@ async function checkMemberInfo(chat, userId, ctx = {}) {
     diag,
     description: String(r.description || "")
   };
+}
+// A'zolikni tekshirish. Joriy bot kanalda admin bo'lmasa (Telegram doimiy xato
+// qaytaradi), kanalda admin bo'lgan BOSHQA bot bilan qayta uriniladi — shuning
+// uchun «bitta bot admin bo'lsa yetarli» amalda ham bajariladi.
+async function checkMemberInfo(chat, userId, ctx = {}) {
+  const cur = curBot();
+  const first = await checkMemberWith(cur, chat, userId, ctx);
+  if (first.result !== "error" || first.transient) return first;
+  // Doimiy xato (bot admin emas / huquq yo'q) — admin huquqi bor BOSHQA
+  // botlar bilan qayta urinamiz. Ro'yxat 3 ta bilan cheklanmaydi: aks holda
+  // 4+ bot bo'lganda admin bot zaxira ro'yxatiga tushmay qolishi mumkin.
+  // Admin botni birinchi qilib chiqamiz (botAdminBotId ma'lum bo'lsa).
+  const others = botsForChecks().filter((b) => b && b.token && !(cur && b.id === cur.id));
+  for (const b of others) {
+    const alt = await checkMemberWith(b, chat, userId, { ...ctx, record: false });
+    if (alt.result !== "error") return { ...alt, viaBot: b.id };
+    if (alt.transient) return first;
+  }
+  return first;
 }
 async function checkMember(chat, userId) {
   return (await checkMemberInfo(chat, userId)).result;
@@ -1536,7 +1581,7 @@ Object.assign(STR.uz, {
   "ch_err_user": "❌ <b>Sizda bu kanalni boshqarish huquqi yo‘q.</b>\n\nFaqat o‘zingiz egasi yoki administratori bo‘lgan kanalni ulash mumkin.\n\nBoshqa odamning kanali bo‘lsa — egasidan bir martalik nazoratchi kodini so‘rang va “🔑 Kod kiritish” dan foydalaning.",
   "ch_err_api": "⚠️ <b>Telegram hozir javob bermadi.</b>\n\nBu vaqtinchalik texnik xato (tarmoq yoki Telegram serveri). Sizda ayb yo‘q va bot admin emas degan xulosa chiqarilmaydi.\n\nBir necha daqiqadan so‘ng manzilni qayta yuboring.",
   "ch_rights_warn": "\n\n⚠️ Bot administrator, lekin “foydalanuvchilarni taklif qilish” huquqi o‘chirilgan. A’zolikni tekshirish ishlaydi; kanal sozlamalarida bu huquqni yoqib qo‘yish tavsiya etiladi.",
-  "ch_bots_missing": "\n\n⚠️ <b>Bu kanalda administrator bo‘lmagan botlar:</b> {bots}.\n\nIshchi botlar ham obunani tekshiradi, shuning uchun ular ham kanalda administrator bo‘lishi kerak. Kanal sozlamalari → <b>Administratorlar</b> → har bir botni qo‘shing (“Obunachilarni ko‘rish” huquqi bilan).",
+  "ch_bots_missing": "\n\nℹ️ <b>Bu kanalda administrator bo‘lmagan botlar:</b> {bots}.\n\nKanal ishlayapti — <b>kamida bitta</b> bot administrator bo‘lishi yetarli. Bu botlar orqali tekshiruv bajarilmaydi; qo‘shimcha ishonchlilik uchun ularni ham kanalga administrator qilishingiz mumkin.",
   "ch_lost_warn": "⛔ <b>Diqqat:</b> bot bu kanalda administrator emas. Yangi vazifa berilmaydi va buyurtma qabul qilinmaydi. Kanal sozlamalari → Administratorlar → botni qo‘shing, so‘ng kanalni qayta ulang.",
   "ch_err_order": "⛔ <b>Buyurtma yaratilmadi.</b>\n\nSabab: <b>{title}</b> kanalida bot huquqi tasdiqlanmadi. Kredit band qilinmadi.",
   "ch_admin_lost_msg": "⚠️ <b>{title}</b> kanalida botning administrator huquqi yo‘qolgan.\n\nShu sababli kanalga <b>yangi vazifa berilmaydi</b> va faol buyurtmalar to‘xtatildi. Kredit va tarix saqlanadi.\n\nTuzatish: kanal sozlamalari → Administratorlar → botni qo‘shib, “Kanallarim” → kanal → qayta ulang.",
@@ -1588,7 +1633,7 @@ Object.assign(STR.ru, {
   "ch_err_user": "❌ <b>У вас нет прав на управление этим каналом.</b>\n\nДобавить можно только канал, где вы владелец или администратор.\n\nЕсли канал чужой — попросите одноразовый код контроллера и используйте «🔑 Ввести код».",
   "ch_err_api": "⚠️ <b>Telegram сейчас не ответил.</b>\n\nЭто временная техническая ошибка (сеть или сервер Telegram). Вашей вины нет, и вывод «бот не администратор» НЕ делается.\n\nОтправьте адрес снова через несколько минут.",
   "ch_rights_warn": "\n\n⚠️ Бот администратор, но право «приглашать пользователей» отключено. Проверка подписки работает; рекомендуем включить это право.",
-  "ch_bots_missing": "\n\n⚠️ <b>Боты, не являющиеся администраторами этого канала:</b> {bots}.\n\nРабочие боты тоже проверяют подписку, поэтому им также нужны права администратора. Настройки канала → <b>Администраторы</b> → добавьте каждого бота (с правом «Просмотр участников»).",
+  "ch_bots_missing": "\n\nℹ️ <b>Боты, не являющиеся администраторами этого канала:</b> {bots}.\n\nКанал работает — достаточно, чтобы <b>хотя бы один</b> бот был администратором. Проверка через этих ботов не выполняется; для надёжности можно добавить и их.",
   "ch_lost_warn": "⛔ <b>Внимание:</b> бот не администратор этого канала. Новые задания не выдаются, заказы не принимаются. Настройки канала → Администраторы → добавьте бота, затем подключите канал заново.",
   "ch_err_order": "⛔ <b>Заказ не создан.</b>\n\nПричина: права бота в канале <b>{title}</b> не подтверждены. Кредиты не зарезервированы.",
   "ch_admin_lost_msg": "⚠️ В канале <b>{title}</b> бот потерял права администратора.\n\nПоэтому новые задания в канал <b>не выдаются</b>, активные заказы приостановлены. Кредиты и история сохранены.\n\nИсправление: Настройки канала → Администраторы → добавьте бота, затем «Мои каналы» → канал → подключите снова.",
@@ -1639,7 +1684,7 @@ Object.assign(STR.en, {
   "ch_err_user": "❌ <b>You do not have management rights for this channel.</b>\n\nYou can add only a channel where you are the owner or an administrator.\n\nFor someone else's channel — ask the owner for a one-time controller code and use “🔑 Enter code”.",
   "ch_err_api": "⚠️ <b>Telegram did not respond right now.</b>\n\nThis is a temporary technical error (network or Telegram server). It is not your fault, and it is NOT treated as “the bot is not an administrator”.\n\nSend the address again in a few minutes.",
   "ch_rights_warn": "\n\n⚠️ The bot is an administrator, but “invite users” is disabled. Membership checks work; enabling that right is recommended.",
-  "ch_bots_missing": "\n\n⚠️ <b>Bots that are not administrators of this channel:</b> {bots}.\n\nWorker bots verify subscriptions too, so they also need administrator rights. Channel settings → <b>Administrators</b> → add each bot (with “View members” permission).",
+  "ch_bots_missing": "\n\nℹ️ <b>Bots that are not administrators of this channel:</b> {bots}.\n\nThe channel works — <b>at least one</b> bot with administrator rights is enough. Checks are not performed through these bots; you can add them for extra reliability.",
   "ch_lost_warn": "⛔ <b>Attention:</b> the bot is not an administrator of this channel. New tasks are not issued and orders are not accepted. Channel settings → Administrators → add the bot, then link the channel again.",
   "ch_err_order": "⛔ <b>Order was not created.</b>\n\nReason: the bot's rights in <b>{title}</b> could not be confirmed. No credits were reserved.",
   "ch_admin_lost_msg": "⚠️ The bot lost administrator rights in <b>{title}</b>.\n\nNew tasks for this channel are <b>not issued</b> and active orders are paused. Credits and history are preserved.\n\nFix: Channel settings → Administrators → add the bot, then “My channels” → channel → link again.",
@@ -3313,55 +3358,60 @@ async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
   // Buyurtma yaratishdan OLDIN kanal holati va bot huquqi qayta tekshiriladi
   // (spec §1.8). Kredit faqat tekshiruvdan keyin band qilinadi.
   if (platform === "telegram" && dest.channelId) {
-    // Barcha yoqilgan botlar (asosiy + ishchi) tekshiriladi: istalgan bot
-    // obunani tekshirishi mumkin, shuning uchun huquqi yo'q bot bo'lsa
-    // buyurtma yaratilmaydi va kredit band qilinmaydi.
+    // Bitta bot yetarli: kanalda KAMIDA BITTA yoqilgan bot (asosiy yoki
+    // ishchi) administrator bo'lsa, buyurtma qabul qilinadi — a'zolikni shu
+    // bot tekshiradi. Qolgan botlarning admin emasligi bloklamaydi.
     const perms = await inspectAllBotsAdmin(dest.channelId);
-    dest.botAdmins = botAdminSnapshot(perms, new Date().toISOString());
+    const at = new Date().toISOString();
+    dest.botAdmins = botAdminSnapshot(perms, at);
     dest.botsMissingAdmin = botsMissingAdmin(perms);
-    const perm = perms.find((b) => b.role === "main") || perms[0];
-    dest.lastAdminCheckAt = new Date().toISOString();
-    dest.botAdminStatus = perm.status;
-    const missBots = botsMissingAdmin(perms);
-    if (!perm.ok) {
-      if (!perm.transient) {
-        // Doimiy nosozlik: kanal yopiladi, kredit band qilinmaydi.
-        dest.botHasAdminRights = false;
-        dest.status = "permission_lost";
-        dest.permissionLostAt = dest.permissionLostAt || new Date().toISOString();
-        u.state = null;
-        save();
-        const owner = userById(dest.ownerId);
-        if (owner && !dest.permissionNotifiedAt) {
-          dest.permissionNotifiedAt = nowStr();
-          if (notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_lost_msg", { title: esc(dest.title) }));
-          save();
-        }
-        return send(chat, T(u, "ch_err_order", { title: esc(dest.title) }) + "\n\n" +
-          T(u, perm.status === CHK.NO_RIGHTS ? "ch_err_rights" : "ch_err_noadmin"), menuFor(u));
-      }
-      // Vaqtinchalik xato — buyurtmani to'xtatmaymiz, lekin ogohlantiramiz.
-      save();
-      if (missBots.length) {
-        // Asosiy botning javobi noaniq bo'lsa ham, ishchi botda doimiy huquq
-        // yo'qligi aniq — buyurtma yaratilmaydi, kredit band qilinmaydi.
-        u.state = null;
-        return send(chat, botsMissingText(u, perms), menuFor(u));
-      }
-    } else {
+    dest.lastAdminCheckAt = at;
+    // Freshness guard: 60 s dan eski natija qarorga kirmaydi.
+    const verdict = botAdminVerdict(perms);
+    const chosen = verdict.bot;
+    const neg = verdict.negative || {};
+    if (chosen) {
+      dest.botAdminStatus = chosen.status;
       dest.botHasAdminRights = true;
+      dest.botAdminBotId = chosen.botDbId;
       if (dest.status === "permission_lost") {
         dest.status = "active";
         dest.permissionLostAt = "";
         dest.permissionNotifiedAt = "";
       }
-      if (missBots.length) {
-        // Asosiy bot admin, lekin ishchi bot emas — vazifalar tekshirilmay
-        // qolishini oldini olish uchun buyurtma qabul qilinmaydi.
-        u.state = null;
+    } else if (verdict.durableNeg) {
+      // Kamida bitta bot ANIQ "admin emas" deb javob berdi va hech bir bot
+      // tasdiqlamadi — bitta botning API xatosi buni yashirmaydi (spec §4).
+      // Kanal yopiladi, kredit band qilinmaydi, tarix o'chirilmaydi.
+      const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
+      dest.botHasAdminRights = false;
+      dest.botAdminStatus = neg.status === CHK.NOT_FOUND ? CHK.NOT_FOUND : CHK.NO_BOT;
+      dest.status = "permission_lost";
+      dest.permissionLostAt = dest.permissionLostAt || new Date().toISOString();
+      dest.permissionLostReason = neg.status === CHK.NOT_FOUND ? "bot_not_found" : "no_admin";
+      dest.permissionLostCheckedAt = at;
+      if (!wasLost) auditSys("channel_permission_lost", dest.id, `reason=${dest.permissionLostReason} checkedAt=${at} via=order`);
+      u.state = null;
+      save();
+      const owner = userById(dest.ownerId);
+      if (owner && !dest.permissionNotifiedAt) {
+        dest.permissionNotifiedAt = nowStr();
+        if (notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_lost_msg", { title: esc(dest.title) }));
         save();
-        return send(chat, botsMissingText(u, perms), menuFor(u));
       }
+      return send(chat, T(u, "ch_err_order", { title: esc(dest.title) }) + "\n\n" +
+        T(u, neg.status === CHK.LIMITED ? "ch_err_rights" : "ch_err_noadmin"), menuFor(u));
+    } else if ((verdict.fresh || []).some((r) => r && r.status === CHK.TOKEN)) {
+      // Hech bir bot VERIFIED_ADMIN emas va kamida bitta botning tokeni
+      // yaroqsiz — bu TEXNIK sabab (huquq yo'qligi emas). Kredit band
+      // qilinmaydi, kanal `permission_lost` deb belgilanmaydi.
+      dest.botAdminStatus = CHK.TOKEN;
+      u.state = null;
+      save();
+      return send(chat, T(u, "ch_err_order", { title: esc(dest.title) }) + "\n\n" + T(u, "ch_err_api"), menuFor(u));
+    } else {
+      // Barcha javoblar noaniq (API xatosi/kutilmoqda) — buyurtma to'xtatilmaydi.
+      save();
     }
   }
   const unit = perSub();
@@ -3520,7 +3570,13 @@ var CH_ERR_KEY = {
   insufficient_permissions: "ch_err_rights",
   channel_inaccessible: "ch_err_channel",
   user_no_rights: "ch_err_user",
-  api_error: "ch_err_api"
+  api_error: "ch_err_api",
+  // Bot tekshiruvining yangi holatlari: token/kutilmoqda — texnik xato,
+  // kanal mavjud emas — kanal xatosi, qisqartirilgan huquq — huquq xatosi.
+  invalid_token: "ch_err_api",
+  check_pending: "ch_err_api",
+  bot_not_found: "ch_err_channel",
+  missing_permissions: "ch_err_rights"
 };
 function chErrText(u, res) {
   if (res.reason === "bad_address") return T(u, "ch_err_address");
@@ -3549,8 +3605,9 @@ async function addChannel(u, text, chat) {
     existing.title = ch.title;
     existing.username = ch.username || uname;
     existing.botHasAdminRights = true;
-    existing.botAdminStatus = CHK.OK;
-    existing.botRightsLimited = !!res.bot.limited;
+    existing.botAdminStatus = res.bot ? res.bot.status : CHK.OK;
+    existing.botRightsLimited = !!(res.bot && res.bot.limited);
+    existing.botAdminBotId = res.bot ? res.bot.botDbId : "";
     existing.lastAdminCheckAt = new Date().toISOString();
     existing.botAdmins = botAdminSnapshot(res.bots, new Date().toISOString());
     existing.botsMissingAdmin = botsMissingAdmin(res.bots);
@@ -3573,9 +3630,10 @@ async function addChannel(u, text, chat) {
     ownerId: u.id,
     ownerName: u.displayName,
     botHasAdminRights: true,
-    botAdminStatus: CHK.OK,
-    botRightsLimited: !!res.bot.limited,
+    botAdminStatus: res.bot ? res.bot.status : CHK.OK,
+    botRightsLimited: !!(res.bot && res.bot.limited),
     botAdmins: botAdminSnapshot(res.bots, new Date().toISOString()),
+    botAdminBotId: res.bot ? res.bot.botDbId : "",
     botsMissingAdmin: botsMissingAdmin(res.bots),
     lastAdminCheckAt: new Date().toISOString(),
     permissionLostAt: "",
@@ -3620,8 +3678,20 @@ var CHK = {
   NO_RIGHTS: "insufficient_permissions",
   NO_CHANNEL: "channel_inaccessible",
   NO_USER: "user_no_rights",
-  API: "api_error"
+  API: "api_error",
+  // Bot administratorligi holatlari (spec §3). Har biri ALOHIDA:
+  // `api_error` va `check_pending` hech qachon `bot_not_admin` ga aylanmaydi.
+  TOKEN: "invalid_token",
+  NOT_FOUND: "bot_not_found",
+  LIMITED: "missing_permissions",
+  PENDING: "check_pending"
 };
+// Bot tekshiruvining "doimiy salbiy" natijalari — faqat shular kanal huquqi
+// yo'qolgani haqida xulosa berishga asos bo'ladi.
+var BOT_DURABLE_NEG = [CHK.NO_BOT, CHK.NOT_FOUND];
+// Bot administrator emasligi haqidagi xabar ro'yxatiga kiradigan holatlar
+// (token/API muammosi egasining aybi emas — ro'yxatga kirmaydi).
+var BOT_MISSING_STATES = [CHK.NO_BOT, CHK.NOT_FOUND];
 // Telegram xatosini "vaqtinchalik" va "doimiy" ga ajratamiz. Doimiy xato
 // (chat not found, not enough rights) — kanal holati haqidagi fakt. Vaqtinchalik
 // xato (timeout, 5xx, 429) esa umuman xulosa chiqarishga asos bo'lmaydi.
@@ -3714,30 +3784,62 @@ function botCheckMeta(bot, extra = {}) {
     botLabel: bot ? (bot.username ? "@" + bot.username : bot.id || "bot") : "bot",
     botId: Number(bot && bot.botId) || 0,
     role: bot ? bot.role || "worker" : "",
+    // Natijaning haqiqiy olingan vaqti. Freshness guard (`botAdminVerdict`)
+    // shu maydonga tayanadi — vaqtsiz natija ishonchsiz hisoblanadi.
+    checkedAt: new Date().toISOString(),
     ...extra
   };
 }
 async function inspectBotAdminFor(bot, chatId) {
-  if (!bot || !bot.token) return botCheckMeta(bot, { status: CHK.API, ok: false, reason: "bot_token_missing", transient: true });
+  if (!bot || !bot.token) return botCheckMeta(bot, { status: CHK.TOKEN, ok: false, reason: "bot_token_missing", transient: false, retryable: false });
   const botId = Number(bot.botId) || 0;
-  if (!botId) return botCheckMeta(bot, { status: CHK.API, ok: false, reason: "bot_id_missing", transient: true });
+  // botId hali ma'lum emas (getMe tugamagan) — bu xulosa emas, KUTISH holati.
+  if (!botId) return botCheckMeta(bot, { status: CHK.PENDING, ok: false, reason: "bot_id_missing", transient: true, retryable: true });
   const r = await tgWith(bot, "getChatMember", { chat_id: chatId, user_id: botId }, 15e3);
-  if (!r.ok) {
-    const kind = tgFailureKind(r);
-    if (kind === "transient") return botCheckMeta(bot, { status: CHK.API, ok: false, reason: String(r.description || "api"), transient: true });
-    // A'zo bo'lmasa yoki o'qish huquqi bo'lmasa Telegram aynan shu turdagi
-    // xatoni beradi — bunda bot haqiqatan administrator emas.
-    return botCheckMeta(bot, { status: CHK.NO_BOT, ok: false, reason: String(r.description || kind) });
-  }
+  if (!r.ok) return botCheckMeta(bot, botAdminFailure(r));
   const st = r.result.status;
   if (st === "creator") return botCheckMeta(bot, { status: CHK.OK, ok: true, botStatus: st, rights: null, missing: [], limited: false });
-  if (st !== "administrator") return botCheckMeta(bot, { status: CHK.NO_BOT, ok: false, botStatus: st, reason: "bot_status_" + st });
+  if (st !== "administrator") return botCheckMeta(bot, { status: CHK.NO_BOT, ok: false, botStatus: st, reason: "bot_status_" + st, transient: false });
   const rights = r.result.permissions || null;
   const missing = [];
   if (rights && rights.can_invite_users === false) missing.push("can_invite_users");
-  // Administrator, lekin huquqlar qisqartirilgan. Bu bloklamaydi (a'zolikni
-  // o'qish uchun administratorlik yetarli), lekin panelda va xabarda ko'rsatiladi.
-  return botCheckMeta(bot, { status: CHK.OK, ok: true, botStatus: st, rights, missing, limited: missing.length > 0 });
+  // Administrator, lekin huquqlar qisqartirilgan. A'zolikni o'qish uchun
+  // administratorlik yetarli, shuning uchun bu bloklamaydi (`ok: true`) —
+  // lekin holat ATAYIN `missing_permissions` deb ajratiladi va panelda
+  // ko'rinadi; `pickAdminBot` to'liq huquqli botni ustun qo'yadi.
+  return botCheckMeta(bot, {
+    status: missing.length ? CHK.LIMITED : CHK.OK,
+    ok: true,
+    botStatus: st,
+    rights,
+    missing,
+    limited: missing.length > 0,
+    transient: false
+  });
+}
+// `getChatMember` nosozligini aniq holatga aylantiradi. Muhim: 401, 403, 400,
+// 429 va tarmoq xatolari BIR XIL "admin emas" degan xulosaga olib kelmaydi.
+function botAdminFailure(r) {
+  const f = classifyTgFailure(r);
+  const desc = String((r && r.description) || "");
+  const base = { transient: !!f.transient, retryAfter: Number(f.retryAfter) || 0, reason: f.errKind || TG_ERR.UNKNOWN };
+  // 401 — token yaroqsiz. Bu kanal haqidagi fakt EMAS, lekin qayta urinish ham
+  // foyda bermaydi: operator tokenni almashtirishi kerak.
+  if (f.errKind === TG_ERR.AUTH) return { ...base, status: CHK.TOKEN, ok: false, transient: false, retryable: false, reason: "invalid_token" };
+  // 429 / 5xx / tarmoq / timeout — xulosa YO'Q, keyin qayta uriniladi.
+  if ([TG_ERR.RATE_LIMIT, TG_ERR.SERVER, TG_ERR.NETWORK, TG_ERR.NETWORK_TIMEOUT].includes(f.errKind)) {
+    return { ...base, status: CHK.API, ok: false, transient: true, retryable: true };
+  }
+  // Bot kanaldan chiqarilgan / bloklangan / kanal o'chirilgan.
+  if (f.errKind === TG_ERR.BLOCKED) return { ...base, status: CHK.NOT_FOUND, ok: false, transient: false, reason: "bot_removed_or_blocked" };
+  if (f.errKind === TG_ERR.NOT_FOUND) return { ...base, status: CHK.NOT_FOUND, ok: false, transient: false, reason: "chat_not_found" };
+  // Huquq yetishmasligi haqidagi aniq javoblar — bot haqiqatan admin emas.
+  if (/not enough rights|chat_admin_required|have no rights|member list is inaccessible|bot is not a member/i.test(desc)) {
+    return { ...base, status: CHK.NO_BOT, ok: false, transient: false, reason: "not_admin" };
+  }
+  if (f.errKind === TG_ERR.NO_RIGHTS) return { ...base, status: CHK.NO_BOT, ok: false, transient: false, reason: "not_admin" };
+  // Noma'lum/400 — xulosa chiqarilmaydi, lekin "admin emas" ham deyilmaydi.
+  return { ...base, status: CHK.API, ok: false, transient: !!f.transient, retryable: true, reason: f.errKind || "unknown" };
 }
 async function inspectBotAdmin(chatId) {
   return inspectBotAdminFor(curBot(), chatId);
@@ -3757,8 +3859,12 @@ async function inspectAllBotsAdmin(chatId) {
 // Natijalarni kanal yozuviga saqlash uchun ixcham ko'rinish.
 function botAdminSnapshot(results, at) {
   const map = {};
+  // Faqat HOZIR mavjud botlar. O'chirilgan (yoki boshqa sabab bilan
+  // `botsList()` da yo'q) botning eski holati yangi snapshotga tushmaydi.
+  const known = new Set(botsList().map((b) => b.id));
   for (const r of results || []) {
     if (!r || !r.botDbId) continue;
+    if (r.botDbId !== "env" && !known.has(r.botDbId)) continue;
     map[r.botDbId] = {
       botId: r.botId || 0,
       label: r.botLabel || r.botDbId,
@@ -3769,18 +3875,68 @@ function botAdminSnapshot(results, at) {
       missing: r.missing || [],
       reason: r.reason || "",
       transient: !!r.transient,
-      checkedAt: at
+      // Har bir natijaning o'z vaqti (panel STALE belgisini shundan hisoblaydi).
+      checkedAt: r.checkedAt || at
     };
   }
   return map;
 }
-// Administrator bo'lmagan botlar ro'yxati (vaqtinchalik xato hisobga olinmaydi).
+// Administrator bo'lmagan botlar ro'yxati. Faqat DOIMIY salbiy natijalar
+// (NOT_ADMIN / BOT_NOT_FOUND) kiradi — API xatosi, yaroqsiz token yoki
+// kutilayotgan tekshiruv bu ro'yxatga tushmaydi (spec §3).
 function botsMissingAdmin(results) {
-  return (results || []).filter((r) => r && !r.ok && !r.transient).map((r) => r.botLabel || r.botDbId);
+  return (results || [])
+    .filter((r) => r && !r.ok && !r.transient && BOT_MISSING_STATES.includes(r.status))
+    // "chat not found" — kanalning o'zi mavjud emas; botni admin qilish
+    // bo'yicha maslahat bu holatda noto'g'ri bo'lardi.
+    .filter((r) => !(r.status === CHK.NOT_FOUND && r.reason === "chat_not_found"))
+    .map((r) => r.botLabel || r.botDbId);
+}
+// Freshness: shu vaqtdan eski natija qarorga ta'sir qilmaydi. 60 soniya —
+// bitta tekshiruv to'lqinining (15 s timeout × 3 parallel) ustki chegarasi.
+var BOT_ADMIN_MAX_AGE_MS = 60e3;
+function botAdminResultFresh(r, maxAgeMs, now) {
+  const at = Date.parse((r && r.checkedAt) || "");
+  if (!Number.isFinite(at)) return false;
+  return now - at <= maxAgeMs;
+}
+// Kanal bo'yicha umumiy xulosa: kamida bitta VERIFIED_ADMIN bormi va doimiy
+// salbiy natija bormi? `null` — xulosa chiqarib bo'lmaydi (faqat API_ERROR).
+// ESKI natijalar (checkedAt > maxAgeMs) na `ok`, na `durableNeg` uchun
+// ishlatiladi: eski NOT_ADMIN yangi API_ERROR bilan qo'shilib noto'g'ri
+// xulosa bermasin.
+function botAdminVerdict(results, opts = {}) {
+  const maxAgeMs = Number.isFinite(opts.maxAgeMs) ? opts.maxAgeMs : BOT_ADMIN_MAX_AGE_MS;
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const list = (results || []).filter(Boolean);
+  const fresh = list.filter((r) => botAdminResultFresh(r, maxAgeMs, now));
+  const stale = list.length - fresh.length;
+  const ok = fresh.filter((r) => r.ok);
+  if (ok.length) return { ok: true, bot: pickAdminBot(fresh), durableNeg: false, fresh, stale };
+  const neg = fresh.filter((r) => !r.transient && BOT_DURABLE_NEG.includes(r.status));
+  return { ok: false, bot: null, durableNeg: neg.length > 0, negative: neg[0] || null, fresh, stale };
+}
+// «BITTA BOT YETARLI»: kanalda kamida bitta yoqilgan bot (asosiy yoki ishchi)
+// administrator bo'lsa — a'zolikni tekshirish va vazifa berish mumkin.
+// Qaysi bot ekani muhim emas; qolganlarining admin emasligi bloklamaydi,
+// faqat ma'lumot sifatida saqlanadi va egasiga ogohlantirish beriladi.
+// Tanlash tartibi: ayni damda xizmat qilayotgan bot → asosiy bot → birinchi ok.
+function pickAdminBot(results, prefer) {
+  const list = (results || []).filter((r) => r && r.ok);
+  if (!list.length) return null;
+  // To'liq huquqli bot qisqartirilgan huquqlidan ustun.
+  const full = list.filter((r) => !r.limited);
+  const pool = full.length ? full : list;
+  const p = prefer || curBot();
+  return (
+    (p && pool.find((r) => r.botDbId === p.id)) ||
+    pool.find((r) => r.role === "main") ||
+    pool[0]
+  );
 }
 // Kanalni qo'shayotgan foydalanuvchida boshqaruv huquqi bormi?
-async function inspectUserRights(chatId, userId) {
-  const r = await tg("getChatMember", { chat_id: chatId, user_id: userId }, 15e3);
+async function inspectUserRightsWith(bot, chatId, userId) {
+  const r = await tgWith(bot, "getChatMember", { chat_id: chatId, user_id: userId }, 15e3);
   if (!r.ok) {
     const kind = tgFailureKind(r);
     if (kind === "transient") return { status: CHK.API, ok: false, reason: String(r.description || "api"), transient: true };
@@ -3798,6 +3954,29 @@ async function inspectUserRights(chatId, userId) {
     return { status: CHK.OK, ok: true, userStatus: st, rights: p };
   }
   return { status: CHK.NO_USER, ok: false, userStatus: st, reason: "user_status_" + st };
+}
+// Foydalanuvchi huquqi ham kanalda ADMIN bo'lgan bot orqali tekshiriladi:
+// admin bo'lmagan joriy bot buni o'qiy olmaydi (bitta bot yetarli qoidasi).
+async function inspectUserRights(chatId, userId, adminBots) {
+  const order = [];
+  const add = (b) => {
+    if (b && b.token && !order.some((x) => x.id === b.id)) order.push(b);
+  };
+  for (const r of adminBots || []) {
+    if (r && r.ok) add(botsList().find((b) => b.id === r.botDbId));
+  }
+  add(curBot());
+  for (const b of botsForChecks()) add(b);
+  let first = null;
+  for (const b of order.slice(0, 4)) {
+    const res = await inspectUserRightsWith(b, chatId, userId);
+    if (res.ok) return res;
+    if (!first) first = res;
+    if (res.transient) return first;
+  }
+  // Hech qanday bot javob bermadi — `undefined` qaytarilsa chaqiruvchi
+  // `user.ok` da yiqilardi. Xulosa o'rniga aniq API holati qaytaramiz.
+  return first || { status: CHK.API, ok: false, reason: "no_bot_available", transient: true };
 }
 // Kanal manzilini (@username yoki t.me havola) telegram chat obyektiga aylantiradi.
 async function resolveChannel(address) {
@@ -3827,15 +4006,32 @@ async function verifyChannelForOwner(address, userId) {
   // Kanalni ulash uchun hal qiluvchi tekshiruv — ASOSIY bot; ishchi botlarning
   // holati ogohlantirish sifatida ko'rsatiladi va buyurtma yaratishda bloklaydi.
   const bots = await inspectAllBotsAdmin(ch.id);
-  const bot = bots.find((b) => b.role === "main") || bots[0] || (await inspectBotAdmin(ch.id));
-  if (!bot.ok) return { ...bot, chat: ch, username: res.username, bots };
-  const user = await inspectUserRights(ch.id, userId);
+  const main = bots.find((b) => b.role === "main") || bots[0] || null;
+  // Kanalni ulash uchun BITTA botning administratorligi yetarli.
+  const bot = pickAdminBot(bots);
+  if (!bot) {
+    // Hech bir bot admin emas. Doimiy salbiy natija bo'lsa — aniq xulosa;
+    // aks holda API xatosi/kutilmoqda (xulosa chiqarilmaydi, kanal
+    // "admin emas" deb yozilmaydi).
+    const verdict = botAdminVerdict(bots);
+    const fail = verdict.durableNeg
+      ? verdict.negative
+      : bots.find((b) => b && b.status === CHK.TOKEN)
+        || bots.find((b) => b && b.status === CHK.API)
+        || main
+        || (await inspectBotAdmin(ch.id));
+    return { ...fail, chat: ch, username: res.username, bot: null, bots };
+  }
+  const user = await inspectUserRights(ch.id, userId, bots);
   if (!user.ok) return { ...user, chat: ch, username: res.username, bot, bots };
-  return { status: CHK.OK, ok: true, chat: ch, username: res.username, bot, user, bots };
+  return { status: CHK.OK, ok: true, chat: ch, username: res.username, bot, main, user, bots };
 }
-async function checkBotAdmin(chatId) {
-  const r = await inspectBotAdmin(chatId);
-  return r.ok;
+// Kanalda KAMIDA BITTA bot administrator bo'lsa `true` (bitta bot yetarli
+// qoidasi). Bu "AYNAN SHU bot adminmi" degan savolga javob BERMAYDI — buning
+// uchun `inspectBotAdminFor(bot, chatId)` ishlatiladi.
+async function anyBotAdmin(chatId) {
+  const results = await inspectAllBotsAdmin(chatId);
+  return !!pickAdminBot(results);
 }
 async function addInstagram(u, text, chat) {
   const m = text.trim().match(/^(?:https?:\/\/)?(?:www\.)?instagram\.com\/([A-Za-z0-9._]+)/i) || text.trim().match(/^@?([A-Za-z0-9._]{2,30})$/);
@@ -4325,7 +4521,7 @@ ${esc(body)}`);
       if (args[0] === "add" && uname) {
         const info = await tg("getChat", { chat_id: `@${uname}` });
         if (!info.ok) return send(chat, "\u274C Kanal topilmadi");
-        if (!await checkBotAdmin(info.result.id)) return send(chat, "\u274C Bot bu kanalda admin emas (obunani tekshirish uchun kerak).");
+        if (!await anyBotAdmin(info.result.id)) return send(chat, "\u274C Hech bir bot bu kanalda admin emas (obunani tekshirish uchun kerak).");
         db.sponsors.push({ id: nid("sp"), title: info.result.title, username: uname, channelId: String(info.result.id), url: `https://t.me/${uname}`, isMandatory: true, isActive: true, subscribersCount: 0, createdAt: nowStr() });
         return done();
       }
@@ -4711,13 +4907,20 @@ function migrateMemberships() {
 // Kanalda bot huquqi yo'qolgani ANIQLANDI — yangi vazifa berilmaydi, ochiq
 // vazifalar yopiladi, egasiga bir marta xabar boradi (spec §1.9).
 // Tarix (vazifalar, a'zoliklar, buyurtmalar) o'chirilmaydi.
-function markChannelPermissionLost(dest, reason) {
+function markChannelPermissionLost(dest, reason, checkedAt) {
   if (!dest || !dest.channelId) return false;
   const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
+  const at = checkedAt || new Date().toISOString();
   dest.botHasAdminRights = false;
-  dest.botAdminStatus = reason === "no_rights" ? CHK.NO_RIGHTS : CHK.NO_BOT;
+  dest.botAdminStatus = reason === "no_rights" ? CHK.NO_RIGHTS
+    : reason === "bot_not_found" ? CHK.NOT_FOUND
+    : CHK.NO_BOT;
   dest.status = "permission_lost";
   dest.permissionLostAt = dest.permissionLostAt || nowStr();
+  // Audit: qaror sababi va tekshiruv vaqti kanal yozuvida saqlanadi.
+  dest.permissionLostReason = String(reason || "");
+  dest.permissionLostCheckedAt = at;
+  if (!wasLost) auditSys("channel_permission_lost", dest.id, `reason=${dest.permissionLostReason} checkedAt=${at}`);
   for (const t of db.tasks) {
     if (t.destinationId === dest.id && OPEN.has(t.status)) {
       t.status = "CANCELLED";
@@ -4737,6 +4940,13 @@ function markChannelPermissionLost(dest, reason) {
 var CH_ADMIN_SWEEP_HOURS = 6;
 var CH_ADMIN_SWEEP_BATCH = 5;
 async function channelHealthSweep() {
+  // Sweep uchun ALOHIDA advisory qulf (`gxb:sweep`). U `gxb:scheduler`,
+  // `gxb:state`, `gxb:poll:*` kalitlari bilan to'qnashmaydi. Qulfni olmagan
+  // instans darhol 0 qaytaradi — parallel sweep va ikki marta Telegram
+  // so'rovi bo'lmaydi. Qulf `finally` da bo'shatiladi (crashda sessiya
+  // uzilishi bilan avtomatik tushadi).
+  if (!await tryLock("sweep")) return 0;
+  try {
   const now = Date.now();
   const due = db.channels
     .filter((c) => !c.disconnectedAt && c.channelId)
@@ -4749,15 +4959,20 @@ async function channelHealthSweep() {
     const at = new Date().toISOString();
     const bots = await inspectAllBotsAdmin(ch.channelId);
     ch.botAdmins = botAdminSnapshot(bots, at);
-    const r = bots.find((b) => b.role === "main") || bots[0];
+    // Freshness guard: 60 s dan eski natija na `ok`, na salbiy xulosaga
+    // kirmaydi.
+    const verdict = botAdminVerdict(bots);
+    const chosen = verdict.bot;
     ch.lastAdminCheckAt = at;
-    ch.botAdminStatus = r.status;
-    // Ishchi botda huquq yo'q bo'lsa — egasiga bir marta aytamiz. Kanal
-    // butunlay yopilmaydi: asosiy bot ishlayapti va tarix o'chirilmaydi.
+    // Holatni faqat ANIQ natija bo'lganda yangilaymiz: API xatosi eski
+    // tasdiqlangan holatni (masalan `ok`) o'chirib tashlamaydi.
+    if (chosen) ch.botAdminStatus = chosen.status;
+    // Bitta bot yetarli: kanal ishlayapti, qolgan botlar haqida egasiga bir
+    // marta ma'lumot beriladi (kanal yopilmaydi).
     const miss = botsMissingAdmin(bots);
     ch.botsMissingAdmin = miss;
     const missKey = miss.join(",");
-    if (miss.length && ch.botsMissingNotifiedFor !== missKey) {
+    if (miss.length && chosen && ch.botsMissingNotifiedFor !== missKey) {
       ch.botsMissingNotifiedFor = missKey;
       const owner = userById(ch.ownerId);
       if (owner && notifOn(owner, "technical")) notify(owner, T(owner, "ch_bots_missing", { bots: esc(miss.join(", ")) }));
@@ -4765,12 +4980,11 @@ async function channelHealthSweep() {
       ch.botsMissingNotifiedFor = "";
     }
     checked++;
-    // Vaqtinchalik xato — hech qanday xulosa chiqarilmaydi, holat o'zgarmaydi.
-    if (r.transient) continue;
-    if (r.ok) {
+    if (chosen) {
       const wasLost = ch.status === "permission_lost";
       ch.botHasAdminRights = true;
-      ch.botRightsLimited = !!r.limited;
+      ch.botAdminBotId = chosen.botDbId;
+      ch.botRightsLimited = !!chosen.limited;
       if (wasLost) {
         ch.status = "active";
         ch.permissionLostAt = "";
@@ -4780,10 +4994,28 @@ async function channelHealthSweep() {
       }
       continue;
     }
-    markChannelPermissionLost(ch, r.status === CHK.NO_RIGHTS ? "no_rights" : "no_admin");
+    // Hech bir bot VERIFIED_ADMIN emas. Xulosa FAQAT kamida bitta doimiy salbiy
+    // natija (NOT_ADMIN / BOT_NOT_FOUND) bo'lsa chiqariladi. Bitta botning
+    // API xatosi boshqa botlarning haqiqiy natijasini yashirmaydi (spec §4):
+    // masalan, 1 bot API_ERROR + 2 bot NOT_ADMIN → kanal `permission_lost`.
+    if (!verdict.durableNeg) {
+      // Xulosa yo'q (API_ERROR/timeout/network/kutilmoqda). Faqat bitta aniq
+      // holat — BARCHA botlarning tokeni yaroqsiz — operatorga ko'rinadigan
+      // qilib yoziladi; kanal holati o'zgarmaydi.
+      const fresh = verdict.fresh || [];
+      if (fresh.length && fresh.every((r) => !r.ok && r.status === CHK.TOKEN)) {
+        ch.botAdminStatus = CHK.TOKEN;
+      }
+      continue; // holat o'zgarmaydi
+    }
+    const neg = verdict.negative || {};
+    markChannelPermissionLost(ch, neg.status === CHK.NOT_FOUND ? "bot_not_found" : "no_admin", at);
   }
   if (checked) save();
   return checked;
+  } finally {
+    await releaseLock("sweep");
+  }
 }
 async function maintenance() {
   // Bir jarayonda ikkita tik ustma-ust tushmasin (uzun ishlagan tik + interval).
@@ -5224,6 +5456,40 @@ function maskToken(t) {
   if (!t) return "";
   return t.length <= 14 ? t.slice(0, 4) + "…" : t.slice(0, 6) + "…" + t.slice(-4);
 }
+// Botning kanallardagi administratorlik holati (panel uchun). Har bir kanal
+// uchun `botAdmins[id]` snapshot'i saqlanadi — shu yerdan yig'amiz.
+function botAdminSummary(botId) {
+  const out = {
+    adminStatus: "",
+    adminReason: "",
+    adminLastCheckAt: "",
+    adminChannels: 0,
+    adminCheckedChannels: 0,
+    adminNeedsAttention: false,
+    adminStale: false
+  };
+  for (const c of db.channels || []) {
+    const a = c.botAdmins && c.botAdmins[botId];
+    if (!a) continue;
+    out.adminCheckedChannels++;
+    if (a.ok) out.adminChannels++;
+    const at = String(a.checkedAt || "");
+    if (!out.adminLastCheckAt || at >= out.adminLastCheckAt) {
+      out.adminLastCheckAt = at;
+      out.adminStatus = a.status || "";
+      out.adminReason = a.reason || "";
+    }
+  }
+  // Token/kutilmoqda holati operatorning e'tiborini talab qiladi; "admin emas"
+  // esa oddiy kanal holati — alohida ko'rsatiladi.
+  out.adminNeedsAttention = [CHK.TOKEN, CHK.PENDING].includes(out.adminStatus) && out.adminChannels === 0;
+  // STALE: oxirgi tekshiruv 2 ta sweep oynasidan (12 soat) eski — natija
+  // joriy holatni aks ettirmasligi mumkin.
+  const staleMs = CH_ADMIN_SWEEP_HOURS * 2 * 36e5;
+  const atMs = Date.parse(out.adminLastCheckAt || "");
+  out.adminStale = Number.isFinite(atMs) && Date.now() - atMs > staleMs;
+  return out;
+}
 function botView(b) {
   return {
     id: b.id,
@@ -5235,7 +5501,8 @@ function botView(b) {
     online: botRuns.has(b.id),
     tokenMasked: maskToken(b.token),
     lastError: b.lastError || "",
-    createdAt: b.createdAt || ""
+    createdAt: b.createdAt || "",
+    ...botAdminSummary(b.id)
   };
 }
 async function cancelOrderAdmin(o) {
@@ -5695,6 +5962,13 @@ function newsStripTags(html) {
   return String(html || "").replace(/<\/?b>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 function startNewsScheduler() {
+  // Bu jadval HAQIQIY Telegram kanaliga post qiladi. Lokal/test muhitda u
+  // ataylab o'chiriladi: muhitda NEWS_BOT_TOKEN qolib ketgan bo'lsa ham
+  // production kanaliga tasodifiy post ketmaydi (spec D).
+  if (IS_TEST_ENV || !(process.env.RENDER || process.env.ALWAYSDATA_ENTRY || process.env.ALLOW_NEWS_SCHEDULER === "1")) {
+    console.log("News bot jadvali o'chirilgan (lokal rejim). Yoqish: ALLOW_NEWS_SCHEDULER=1");
+    return;
+  }
   const cfg = newsCfg();
   if (!NEWS_TOKEN) {
     console.error("News bot: NEWS_BOT_TOKEN o'rnatilmagan");
@@ -5828,6 +6102,97 @@ $('#post').onclick=async()=>{
 };
 load();
 </script></body></html>`;
+// --- Eksport xavfsizligi (spec §5) ---
+// Panel/eksport orqali bot tokenlari, API kalitlari va parol xeshlari hech
+// qachon tashqariga chiqmaydi. Faqat tozalangan nusxa beriladi.
+function sanitizeForExport(state) {
+  const out = JSON.parse(JSON.stringify(state || {}));
+  const s = out.settings || (out.settings = {});
+  const removed = [];
+  if (s.telegramBotToken) {
+    s.telegramBotToken = "";
+    removed.push("settings.telegramBotToken");
+  }
+  if (Array.isArray(s.bots)) {
+    for (const b of s.bots) {
+      if (b && b.token) {
+        b.token = "";
+        removed.push("settings.bots[].token");
+      }
+    }
+  }
+  if (s.news && s.news.apiKey) {
+    s.news.apiKey = "";
+    removed.push("settings.news.apiKey");
+  }
+  if (Array.isArray(out.adminUsers)) {
+    out.adminUsers = out.adminUsers.map((a) => {
+      if (!a || !a.passHash) return a;
+      removed.push("adminUsers[].passHash");
+      const { passHash, ...rest } = a;
+      return rest;
+    });
+  }
+  return { state: out, removed: [...new Set(removed)] };
+}
+// --- Panel «Operatsiyalar» (qo'lda bajariladigan texnik amallar) ---
+function opsJobStats() {
+  const jobs = db.verificationJobs || [];
+  const open = /* @__PURE__ */ new Set(["PENDING", "RUNNING"]);
+  const openTaskChecks = /* @__PURE__ */ new Set(
+    jobs.filter((j) => j.jobType === "TASK_CHECK" && open.has(j.status)).map((j) => j.taskId)
+  );
+  const broken = (db.tasks || []).filter((t) => t.status === "CHECK_ERROR" || t.status === "RECHECK");
+  return {
+    total: jobs.length,
+    pending: jobs.filter((j) => j.status === "PENDING").length,
+    due: jobs.filter((j) => j.status === "PENDING" && Date.parse(j.scheduledAt || "0") <= Date.now()).length,
+    running: jobs.filter((j) => j.status === "RUNNING").length,
+    taskCheckPending: jobs.filter((j) => j.jobType === "TASK_CHECK" && j.status === "PENDING").length,
+    checkErrorTasks: broken.length,
+    // Jobi yo'q CHECK_ERROR/RECHECK vazifalar: `repairTaskChecks()` aynan
+    // shular uchun BITTA persistent job yaratadi (dublikat yaratmaydi).
+    withoutJob: broken.filter((t) => !openTaskChecks.has(t.id)).length
+  };
+}
+function opsChannelStats() {
+  const chs = db.channels || [];
+  const staleMs = CH_ADMIN_SWEEP_HOURS * 2 * 36e5;
+  return {
+    total: chs.length,
+    permissionLost: chs.filter((c) => c.status === "permission_lost").length,
+    paused: chs.filter((c) => c.status === "paused").length,
+    adminMissing: chs.filter((c) => !c.botHasAdminRights).length,
+    staleCheck: chs.filter((c) => {
+      const t = Date.parse(c.lastAdminCheckAt || "");
+      return !Number.isFinite(t) || Date.now() - t > staleMs;
+    }).length
+  };
+}
+// FAQAT O'QISH: hech qanday balans yoki jurnal yozuvi o'zgartirilmaydi.
+function ledgerReport() {
+  const sum = summarizeRuntime(db.users, db.transactions, db.orders);
+  return {
+    users: sum.users,
+    matched: sum.matched,
+    mismatched: sum.mismatched,
+    negative: sum.negative,
+    totals: sum.totals,
+    problems: sum.perUser.filter((p) => !p.ok).slice(0, 25).map((p) => ({
+      userId: p.userId,
+      stored: p.stored,
+      calc: { available: p.calc.available, reserved: p.calc.reserved, total: p.calc.total },
+      delta: p.delta,
+      causes: p.causes
+    }))
+  };
+}
+function touchOps(kind, n) {
+  db.opsMeta = db.opsMeta || {};
+  db.opsMeta[kind + "At"] = nowStr();
+  if (typeof n === "number") db.opsMeta[kind + "Count"] = n;
+  save();
+}
 var server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://x");
   if (url.pathname === "/healthz") {
@@ -6007,7 +6372,7 @@ var server = http.createServer((req, res) => {
       settings: "settings", complaints: "complaints", sponsors: "sponsors", instagram: "instagram",
       referrals: "referrals", moderation: "moderation", appeals: "moderation", analytics: "analytics",
       health: "health", audit: "audit", admins: "admins", export: "export", broadcast: "settings",
-      backup: "health", backups: "health"
+      backup: "health", backups: "health", ops: "health"
     };
     const needPerm = PERM_OF_ROUTE[route] || "read";
     const role = (req.auth && req.auth.role) || "owner";
@@ -6243,6 +6608,74 @@ var server = http.createServer((req, res) => {
           }
           throw new Error("Noma'lum amal");
         }
+        case "ops": {
+          // Panelning «Operatsiyalar» bo'limi: terminaldan qilinadigan texnik
+          // ishlar shu yerdan bajariladi. Bu yerda HECH QANDAY balans yoki
+          // jurnal yozuvi o'zgartirilmaydi (ledger — faqat o'qish).
+          if (!isPost) {
+            return {
+              now: uzbNow().full,
+              storage: STORAGE,
+              db: DATABASE_URL ? "postgres" : "fayl",
+              uptime: uptimeStr(),
+              polling: botsList().map((x) => ({
+                id: x.id,
+                label: botName(x),
+                role: x.role || "worker",
+                username: x.username || "",
+                enabled: !!x.enabled,
+                online: botRuns.has(x.id),
+                pollLock: x.pollLock || "",
+                startedAt: x.startedAt || "",
+                lastError: x.lastError || ""
+              })),
+              jobs: opsJobStats(),
+              channels: opsChannelStats(),
+              ledger: (() => {
+                const l = ledgerReport();
+                return { users: l.users, matched: l.matched, mismatched: l.mismatched, negative: l.negative, totals: l.totals, problems: l.problems };
+              })(),
+              backups: await listBackups(),
+              opsMeta: db.opsMeta || {},
+              lastBackupAt: db.lastBackupAt ? new Date(db.lastBackupAt).toISOString() : ""
+            };
+          }
+          const action = String(b.action || "");
+          if (action === "ledger") return { ledger: ledgerReport() };
+          if (action === "run_jobs") {
+            const limit = Math.min(500, Math.max(1, Number(b.limit) || VERIFY_BATCH));
+            const n = await processVerificationJobs(limit);
+            touchOps("jobs", n);
+            audit(req, "ops_run_jobs", String(n));
+            return { processed: n, jobs: opsJobStats() };
+          }
+          if (action === "repair_task_checks") {
+            // Instanslararo qulf: ikki instans bir vaqtda qayta tiklasa ham
+            // dublikat job yaratilmaydi (repairTaskChecks ochiq jobni ko'radi).
+            const tx = await withStateTx(async () => repairTaskChecks());
+            if (!tx.ok) throw new Error("Holat qulfi olinmadi: " + (tx.reason || "band"));
+            const created = Number(tx.value) || 0;
+            // Joblar restartdan keyin ham qolishi shart — yozuvni KUTAMIZ.
+            const saved = await flushSaveAwaited();
+            touchOps("repair", created);
+            audit(req, "ops_repair_task_checks", String(created), saved ? "saved" : "save_failed");
+            if (!saved) throw new Error("Saqlashda xatolik — joblar yaratildi, lekin yozuv tasdiqlanmadi");
+            return { created, jobs: opsJobStats() };
+          }
+          if (action === "sweep") {
+            const n = await channelHealthSweep();
+            touchOps("sweep", n);
+            audit(req, "ops_sweep", String(n));
+            return { checked: n, channels: opsChannelStats() };
+          }
+          if (action === "hourly") {
+            await hourlyReport();
+            touchOps("hourly");
+            audit(req, "ops_hourly", "ok");
+            return { ok: true };
+          }
+          throw new Error("Noma'lum amal: " + action);
+        }
         case "backup": {
           if (!isPost) return { items: await listBackups(), lastBackupAt: db.lastBackupAt };
           const ok = await backupNow("qo'lda");
@@ -6356,8 +6789,10 @@ var server = http.createServer((req, res) => {
         case "export": {
           db.lastExportAt = Date.now();
           save();
-          audit(req, "export", "state");
-          return { at: nowStr(), state: db };
+          // Tokenlar/parol xeshlari eksportga TUSHMAYDI (spec §5).
+          const clean = sanitizeForExport(db);
+          audit(req, "export_sanitized", "state", clean.removed.join(","));
+          return { at: nowStr(), sanitized: true, removed: clean.removed, state: clean.state };
         }
         case "bots": {
           if (!isPost) return { bots: botsList().map(botView) };
@@ -6400,6 +6835,12 @@ var server = http.createServer((req, res) => {
             if (bot.role === "main") throw new Error("Asosiy botni o'chirib bo'lmaydi");
             stopBotLoop(bot.id);
             S().bots = botsList().filter((x) => x.id !== bot.id);
+            // O'chirilgan botning eski tekshiruv natijalari kanallarda qolib
+            // ketmasin (panelda faol bot sifatida ko'rinmasligi uchun).
+            for (const c of db.channels || []) {
+              if (c.botAdmins && Object.hasOwn(c.botAdmins, bot.id)) delete c.botAdmins[bot.id];
+              if (c.botAdminBotId === bot.id) c.botAdminBotId = "";
+            }
             save();
             return { bots: botsList().map(botView) };
           }
@@ -6593,7 +7034,7 @@ var server = http.createServer((req, res) => {
           if (!uname) throw new Error("Username kiriting");
           const info = await tg("getChat", { chat_id: "@" + uname }, 15e3);
           if (!info.ok) throw new Error("Kanal topilmadi: " + (info.description || ""));
-          if (!await checkBotAdmin(info.result.id)) throw new Error("Bot bu kanalda administrator emas");
+          if (!await anyBotAdmin(info.result.id)) throw new Error("Hech bir bot bu kanalda administrator emas");
           if (db.sponsors.some((s) => s.username === uname)) throw new Error("Allaqachon qo'shilgan");
           db.sponsors.push({ id: nid("sp"), title: info.result.title, username: uname, channelId: String(info.result.id), url: "https://t.me/" + uname, isMandatory: true, isActive: true, subscribersCount: 0, createdAt: nowStr() });
           save();
@@ -6933,6 +7374,7 @@ function migrateOrderUnits() {
   return n;
 }
 async function main() {
+  assertEnvSafe();
   await openStore();
   botsInit();
   migrateSettings();
