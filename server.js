@@ -1585,6 +1585,7 @@ Object.assign(STR.uz, {
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nSo‘ralgan: {req} ta\n✅ Tasdiqlangan: {ver} ta\n👥 Faol: {act} ta\n➖ Chiqqan: {unsub} ta\n⏳ Kutilmoqda: {pend} ta\n\n🔑 Nazoratchilar: {ctl}\n⚠️ Shikoyatlar: {cmp} ta\n\n🛒 <b>Buyurtma tarixi:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Kanal ulash — 3 qadam</b>\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBekor qilish: /cancel",
   "start_ask_channel": "📢 <b>Kanalingizni botga ulang</b>\n\nO‘z kanalingizga obunachi buyurtma qilish uchun kanalni botga ulashingiz kerak:\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. «{btn}» tugmasini bosing\n3. Kanal manzilini yuboring: <code>@mening_kanalim</code>{bonus}\n\nBekor qilish: /cancel",
+  "choose_lang": "🌐 <b>Tilni tanlang</b>\n\nKeyingi qadamlar tanlangan tilda ko‘rsatiladi.",
   "ch_added": "📢 <b>Kanal ulandi!</b>\n\n• {title} (@{username})\n• Bot admin huquqi: tasdiqlangan ✅",
   "ch_added_bonus": "\n\n🎁 Kanal ulaganingiz uchun <b>+{bonus} kredit</b> sovg‘a!\n💰 Balans: {bal} kredit",
   "verify_none": "Tekshiradigan vazifangiz yo‘q.\n\nAvval “📋 Vazifalar” tugmasini bosing.",
@@ -1638,6 +1639,7 @@ Object.assign(STR.ru, {
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nЗаказано: {req}\n✅ Подтверждено: {ver}\n👥 Активные: {act}\n➖ Отписались: {unsub}\n⏳ В ожидании: {pend}\n\n🔑 Контроллеры: {ctl}\n⚠️ Обращения: {cmp}\n\n🛒 <b>История заказов:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Добавление канала — 3 шага</b>\n\n1. Сделайте бота <b>администратором</b>\n2. Отправьте адрес канала, например: <code>@moy_kanal</code>\n3. Бот проверит и добавит\n\nОтмена: /cancel",
   "start_ask_channel": "📢 <b>Подключите свой канал к боту</b>\n\nЧтобы заказывать подписчиков на свой канал, подключите его к боту:\n\n1. Сделайте бота <b>администратором</b> канала\n2. Нажмите «{btn}»\n3. Отправьте адрес канала: <code>@moy_kanal</code>{bonus}\n\nОтмена: /cancel",
+  "choose_lang": "🌐 <b>Выберите язык</b>\n\nДальнейшие шаги будут показаны на выбранном языке.",
   "ch_added": "📢 <b>Канал добавлен!</b>\n\n• {title} (@{username})\n• Права администратора: подтверждены ✅",
   "ch_added_bonus": "\n\n🎁 За добавление канала <b>+{bonus} кредитов</b>!\n💰 Баланс: {bal}",
   "verify_none": "Нет заданий для проверки.\n\nСначала нажмите “📋 Задания”.",
@@ -1691,6 +1693,7 @@ Object.assign(STR.en, {
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nRequested: {req}\n✅ Verified: {ver}\n👥 Active: {act}\n➖ Unsubscribed: {unsub}\n⏳ Pending: {pend}\n\n🔑 Controllers: {ctl}\n⚠️ Complaints: {cmp}\n\n🛒 <b>Order history:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Add a channel — 3 steps</b>\n\n1. Make the bot an <b>administrator</b>\n2. Send the channel address, e.g. <code>@my_channel</code>\n3. The bot verifies and adds it\n\nCancel: /cancel",
   "start_ask_channel": "📢 <b>Connect your channel to the bot</b>\n\nTo order subscribers for your channel, link it to the bot:\n\n1. Make the bot an <b>administrator</b> of your channel\n2. Press “{btn}”\n3. Send the channel address: <code>@my_channel</code>{bonus}\n\nCancel: /cancel",
+  "choose_lang": "🌐 <b>Choose a language</b>\n\nNext steps will be shown in the selected language.",
   "ch_added": "📢 <b>Channel added!</b>\n\n• {title} (@{username})\n• Admin rights: verified ✅",
   "ch_added_bonus": "\n\n🎁 <b>+{bonus} credits</b> for linking your channel!\n💰 Balance: {bal}",
   "verify_none": "No tasks to check.\n\nPress “📋 Tasks” first.",
@@ -4136,6 +4139,15 @@ function guideText(u) {
     bonus: bonus > 0 ? T(u, "bonus_line", { bonus }) : ""
   });
 }
+// Yangi foydalanuvchiga kanalini botga ulashni taklif qilamiz: tugma mavjud
+// `chadd` oqimini ochadi (botni administrator qilish + manzil yuborish).
+function askChannelLink(u, chat) {
+  const bonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
+  return send(chat, T(u, "start_ask_channel", {
+    btn: T(u, "ch_add"),
+    bonus: bonus > 0 ? T(u, "bonus_line", { bonus }) : ""
+  }), inline([[{ text: T(u, "ch_add"), callback_data: "chadd" }]]));
+}
 async function handleMessage(msg) {
   if (msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
   const chat = msg.chat.id;
@@ -4170,14 +4182,12 @@ async function handleMessage(msg) {
     save();
     if (isNew) {
       await send(chat, T(u, "start_new", { name: esc(u.displayName) }), menuFor(u));
-      await send(chat, guideText(u));
-      // Yangi foydalanuvchidan kanalini botga ulashni so'raymiz: tugma
-      // mavjud `chadd` oqimini ochadi (kanalni administrator qilish + manzil).
-      const linkBonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
-      await send(chat, T(u, "start_ask_channel", {
-        btn: T(u, "ch_add"),
-        bonus: linkBonus > 0 ? T(u, "bonus_line", { bonus: linkBonus }) : ""
-      }), inline([[{ text: T(u, "ch_add"), callback_data: "chadd" }]]));
+      // Birinchi qadam — til tanlash. Til tanlangach (`langnew:<til>`) shu
+      // tilda yo'riqnoma va kanal ulash so'rovi yuboriladi.
+      await send(chat, T(u, "choose_lang"), inline([
+        [{ text: "🇺🇿 O‘zbekcha", callback_data: "langnew:uz" }, { text: "🇷🇺 Русский", callback_data: "langnew:ru" }],
+        [{ text: "🇬🇧 English", callback_data: "langnew:en" }]
+      ]));
     } else {
       await send(chat, T(u, "start_back", { name: esc(u.displayName), balance: balanceLine(u) }), menuFor(u));
     }
@@ -4424,6 +4434,16 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       save();
       await send(chat, T(u, "lang_saved"), menuFor(u));
       return showSettings(u, chat);
+    }
+    case "langnew": {
+      // Yangi foydalanuvchi tilni tanladi: endi yo'riqnoma va kanal ulash
+      // so'rovi tanlangan tilda yuboriladi.
+      if (!STR[arg]) return;
+      u.language = arg;
+      save();
+      await send(chat, T(u, "lang_saved"), menuFor(u));
+      await send(chat, guideText(u));
+      return askChannelLink(u, chat);
     }
     case "nt": {
       if (!u.notif) u.notif = { subscribers: true, referrals: true, orders: true, technical: true };
