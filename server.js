@@ -4148,6 +4148,14 @@ function askChannelLink(u, chat) {
     bonus: bonus > 0 ? T(u, "bonus_line", { bonus }) : ""
   }), inline([[{ text: T(u, "ch_add"), callback_data: "chadd" }]]));
 }
+// Til tanlash tugmalari. Yangi foydalanuvchi tanlamay qo'ysa, keyingi /start
+// da yana ko'rsatiladi (`langAsked`), lekin eski foydalanuvchilarga tegmaydi.
+function askLanguage(u, chat) {
+  return send(chat, T(u, "choose_lang"), inline([
+    [{ text: "🇺🇿 O‘zbekcha", callback_data: "langnew:uz" }, { text: "🇷🇺 Русский", callback_data: "langnew:ru" }],
+    [{ text: "🇬🇧 English", callback_data: "langnew:en" }]
+  ]));
+}
 async function handleMessage(msg) {
   if (msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
   const chat = msg.chat.id;
@@ -4182,14 +4190,14 @@ async function handleMessage(msg) {
     save();
     if (isNew) {
       await send(chat, T(u, "start_new", { name: esc(u.displayName) }), menuFor(u));
+      u.langAsked = true;
       // Birinchi qadam — til tanlash. Til tanlangach (`langnew:<til>`) shu
       // tilda yo'riqnoma va kanal ulash so'rovi yuboriladi.
-      await send(chat, T(u, "choose_lang"), inline([
-        [{ text: "🇺🇿 O‘zbekcha", callback_data: "langnew:uz" }, { text: "🇷🇺 Русский", callback_data: "langnew:ru" }],
-        [{ text: "🇬🇧 English", callback_data: "langnew:en" }]
-      ]));
+      await askLanguage(u, chat);
     } else {
       await send(chat, T(u, "start_back", { name: esc(u.displayName), balance: balanceLine(u) }), menuFor(u));
+      // Til hali tanlanmagan bo'lsa (tanlash oynasi tashlab ketilgan) — yana so'raymiz.
+      if (u.langAsked && !u.langChosen) await askLanguage(u, chat);
     }
     await sponsorGate(u, chat);
     return;
@@ -4431,6 +4439,7 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
     case "lang": {
       if (!STR[arg]) return;
       u.language = arg;
+      u.langChosen = true;
       save();
       await send(chat, T(u, "lang_saved"), menuFor(u));
       return showSettings(u, chat);
@@ -4440,6 +4449,7 @@ Bu kodni nazoratchi bo\u2018ladigan odamga bering. Amal qilish muddati: 5 daqiqa
       // so'rovi tanlangan tilda yuboriladi.
       if (!STR[arg]) return;
       u.language = arg;
+      u.langChosen = true;
       save();
       await send(chat, T(u, "lang_saved"), menuFor(u));
       await send(chat, guideText(u));
