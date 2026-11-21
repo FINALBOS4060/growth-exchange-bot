@@ -1334,7 +1334,7 @@ var STR = {
     ord_inflight: "⏳ Buyurtma yaratilmoqda. Takroriy bosish yangi buyurtma yaratmaydi — bir necha soniyadan so‘ng holatni tekshiring.",
     ord_cancelled: "❌ Buyurtma bekor qilindi. Kredit sarflanmadi.",
     ord_short: "❌ Kredit yetmayapti.\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {lack} kredit\n\n📋 Vazifalarni bajarib kredit to‘plang.",
-    stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit — ishlatsa bo‘ladigan\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
+    stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
     ref_title: "👥 <b>Referal tizimi</b>\n\nDo‘stingiz shu havola bilan kirib <b>bitta vazifa</b> bajarsa, sizga <b>+{reward} kredit</b> bonus beriladi.\nBonus kanalingizga obunachi sifatida yo‘naltiriladi (1 obunachi = {unit} kredit).\n\nTaklif qilganlar: {n} ta • Yo‘naltirilgan bonuslar: {paid} ta{pending}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
     ref_pending: "\n\n🎁 Yo‘naltirilmagan bonus: <b>{amount} kredit</b>{hint}",
     ref_alloc: "🎁 Bonusni kanalga yo‘naltirish",
@@ -2981,8 +2981,15 @@ Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
   await send(chat, text, menuFor(u));
   if (!notDone.length && !out.apiErrorTasks.length) await showTasks(u, platform, chat);
 }
+// Balans — hamyonning umumiy qoldig'i: erkin kredit + kanallarga ajratilgan
+// (hali bajarilmagan buyurtmalar) kredit. Obunachi tasdiqlanganda buyurtma
+// qismi sarflanadi va shu qoldiqdan ayiriladi.
+function walletCredits(u) {
+  const c = (u && u.credits) || {};
+  return (Number(c.available) || 0) + (Number(c.reserved) || 0);
+}
 function balanceLine(u) {
-  return T(u, "bal", { a: u.credits.available });
+  return T(u, "bal", { a: walletCredits(u) });
 }
 // Kanalga faol buyurtmalar orqali ajratilgan kredit (hali bajarilmagan qism).
 function channelCredits(chId) {
@@ -3124,7 +3131,7 @@ async function showStats(u, chat) {
   return send(chat, T(u, "stats_title", {
     name: esc(u.displayName),
     id: u.telegramId,
-    a: c.available,
+    a: walletCredits(u),
     r: c.reserved,
     s: c.spent,
     ref: c.refunded,
@@ -3148,7 +3155,7 @@ async function showSettings(u, chat) {
     name: esc(u.displayName || ""),
     id: u.telegramId,
     lang: langName,
-    bal: c.available || 0,
+    bal: walletCredits(u),
     hourly: u.notifications ? "\u2705" : "\u26D4",
     sub: mark(notifOn(u, "subscribers")),
     ref: mark(notifOn(u, "referrals")),
@@ -3245,7 +3252,7 @@ async function showMyData(u, chat) {
     username: u.username ? "@" + esc(u.username) : "\u2014",
     lang: { uz: "O\u2018zbekcha", ru: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "English" }[langOf(u)],
     date: u.registeredAt || "\u2014",
-    a: c.available || 0,
+    a: walletCredits(u),
     r: c.reserved || 0,
     s: c.spent || 0,
     ref: c.refunded || 0,
