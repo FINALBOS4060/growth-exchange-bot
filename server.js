@@ -267,6 +267,10 @@ function pgConfig(url) {
 // Oxirgi o'qilgan/yozilgan holat (uch tomonlama merge uchun ASOS) va `rev`.
 // `rev` — `app_state` qatorining versiyasi: har muvaffaqiyatli yozuvda +1.
 var LAST_STATE = "";
+// Bazada HAQIQATAN turgan holat matni (oxirgi muvaffaqiyatli yozuv yoki
+// o'qilgan qator). `persistNow()` aynan shu matn bilan solishtiradi;
+// `syncDown()` boshqa instans yozganini ko'rsa tozalaydi.
+var DB_STATE = "";
 var STATE_REV = 0;
 // `persist()` natijani HAQIQIY qaytaradi: xato yutilmaydi. Zanjir (dbChain)
 // hech qachon rad etilmaydi — bitta xato keyingi yozuvlarni bloklamaydi, lekin
@@ -278,6 +282,12 @@ var STATE_REV = 0;
 function persistNow() {
   if (!dbPool) return Promise.resolve(true);
   const payload = JSON.stringify(db);
+  // Holat bazadagi bilan AYNAN bir xil bo'lsa — JSON'ni qayta yubormaymiz.
+  // Solishtirish faqat `DB_STATE` bilan: `LAST_STATE` merge uchun ASOS bo'lib,
+  // u mahalliy saqlanmagan o'zgarishlarni ham o'z ichiga oladi (unga tayanib
+  // "o'zgarmagan" deyish ma'lumot yo'qotardi). `rev` ham o'zgarmaydi — CAS
+  // mantiqi (WHERE id = 1 AND rev = $2) tegilmaydi.
+  if (payload === DB_STATE) return Promise.resolve(true);
   const expect = STATE_REV;
   const p = dbChain.then(() => dbPool.query(
     "UPDATE app_state SET data = $1::jsonb, rev = rev + 1, updated_at = now() WHERE id = 1 AND rev = $2 RETURNING rev",
@@ -291,6 +301,7 @@ function persistNow() {
     }
     STATE_REV = Number(r.rows[0].rev) || expect + 1;
     LAST_STATE = payload;
+    DB_STATE = payload;
     return true;
   }, (e) => {
     console.error("Postgres saqlash xatosi:", e && e.message || e);
@@ -401,6 +412,7 @@ async function openStore() {
         applyLoadedState(r.rows[0].data);
         STATE_REV = Number(r.rows[0].rev) || 0;
         LAST_STATE = JSON.stringify(db);
+        DB_STATE = LAST_STATE;
         console.log("Saqlash: Postgres (mavjud holat yuklandi, rev=" + STATE_REV + ")");
       } else {
         loadFile();
@@ -413,11 +425,13 @@ async function openStore() {
         if (ins.rows.length) {
           STATE_REV = 0;
           LAST_STATE = JSON.stringify(db);
+          DB_STATE = LAST_STATE;
         } else {
           const r2 = await dbPool.query("SELECT data, rev FROM app_state WHERE id = 1");
           if (r2.rows.length) applyLoadedState(r2.rows[0].data);
           STATE_REV = r2.rows.length ? Number(r2.rows[0].rev) || 0 : 0;
           LAST_STATE = JSON.stringify(db);
+          DB_STATE = LAST_STATE;
         }
         console.log("Saqlash: Postgres (yangi jadval, boshlang'ich holat yozildi)");
       }
@@ -918,6 +932,9 @@ function liveSync(fresh) {
     cur[k] = fv;
   }
   LAST_STATE = JSON.stringify(db);
+  // Birlashgan natija bazadagi matnga teng bo'lmasligi mumkin — keyingi
+  // saqlash oddiy yozuv bo'lib qoladi (`persistNow()` o'tkazib yubormaydi).
+  DB_STATE = "";
   return true;
 }
 // Qulf ostida: bazadagi eng so'nggi holatni o'qib, xotira bilan BIRLASHTIRIB
@@ -938,6 +955,7 @@ async function syncDown() {
   if (!LAST_STATE) {
     liveSync(row.data);
     STATE_REV = rev;
+    DB_STATE = JSON.stringify(db);
     return { ok: true };
   }
   if (rev === STATE_REV) return { ok: true }; // boshqa instans yozmagan
@@ -1985,8 +2003,9 @@ function addTx(u, amount, type, description, extra = {}) {
     ...(CURRENT_OP ? { opId: CURRENT_OP } : {}),
     ...extra
   });
-  // Tarixiy yozuvlar o'chirilmaydi (spec §8): faqat hajm katta bo'lsa ogohlantiramiz.
-  if (db.transactions.length === 2e4) console.warn("Tranzaksiyalar 20000 taga yetdi — jurnal o'chirilmaydi, arxivlash rejasi kerak.");
+  // Jurnal chegarasi — `LOG_CAPS.transactions`. Undan oshgan eng eski yozuvlar
+  // maintenance'da olib tashlanadi (JSONB snapshot cheksiz o'smasin).
+  if (db.transactions.length === 2e4) console.warn("Tranzaksiyalar 20000 taga yetdi — eng eski yozuvlar chegaradan oshsa olib tashlanadi.");
   return true;
 }
 // Admin qo'lda tuzatishi (qo'shish/ayirish). Ilgari balans `Math.max(0, ...)`
@@ -5023,17 +5042,38 @@ async function channelHealthSweep(opts) {
     await releaseLock("sweep");
   }
 }
+// Saqlanadigan jurnallar chegarasi. `app_state` — BITTA JSONB hujjat: massiv
+// cheksiz o'ssa, HAR saqlash shu kattalikni yuboradi. Eng yangi yozuvlar
+// qoladi, eng eskilari olib tashlanadi (`splice` — havola uzilmaydi).
+var LOG_CAPS = { transactions: 5e4, verifyLog: 5e3, verifyErrors: 2e3, membershipEvents: 5e3, notifPeriods: 2e3, auditLog: 2e3 };
+function trimLogs() {
+  let removed = 0;
+  for (const key of Object.keys(LOG_CAPS)) {
+    const arr = db[key];
+    const cap = LOG_CAPS[key];
+    if (!Array.isArray(arr) || arr.length <= cap) continue;
+    const extra = arr.length - cap;
+    arr.splice(0, extra);
+    removed += extra;
+    console.warn(`${key}: ${extra} ta eski yozuv chegaradan (${cap}) oshgani uchun olib tashlandi`);
+  }
+  return removed;
+}
 async function maintenance() {
   // Bir jarayonda ikkita tik ustma-ust tushmasin (uzun ishlagan tik + interval).
   if (MAINTENANCE_BUSY) return 0;
   MAINTENANCE_BUSY = true;
   try {
     const cutoff = Date.now() - 48 * 36e5;
-    for (const t of db.tasks) if (OPEN.has(t.status) && Date.parse(t.createdAt) < cutoff) t.status = "CANCELLED";
-    recoverStaleJobs();
+    let changed = 0;
+    for (const t of db.tasks) if (OPEN.has(t.status) && Date.parse(t.createdAt) < cutoff) { t.status = "CANCELLED"; changed++; }
+    changed += recoverStaleJobs();
+    changed += trimLogs();
     await processVerificationJobs();
     await channelHealthSweep();
-    save();
+    // processVerificationJobs/channelHealthSweep o'zgarish bo'lsa o'zi save()
+    // qiladi. Bu yerda har 2 daqiqada to'liq holatni behuda qayta yozmaymiz.
+    if (changed) save();
   } finally {
     MAINTENANCE_BUSY = false;
   }
@@ -5074,7 +5114,9 @@ async function pollLoop(bot, token) {
       const upd = up;
       enqueue(from.id, () => botCtx.run(bot, () => upd.message ? handleMessage(upd.message) : handleCallback(upd.callback_query)));
     }
-    save();
+    // Bo'sh long-poll natijasi (odatiy holat) hech narsani o'zgartirmaydi —
+    // to'liq holatni Postgres'ga qayta yozish faqat trafikni yoqardi.
+    if (r.result.length) save();
   }
 }
 var PANEL_PAGE = "";
