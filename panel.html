@@ -461,7 +461,7 @@ async function loadUsers() {
   $('#users-sub').textContent = 'Jami: ' + money(d.total) + ' ta' + (q ? ' · qidiruv: "' + q + '"' : '') + ' · oxirgi ' + d.items.length + ' ta ko\'rsatilgan';
   $('#users-list').innerHTML = table(['Foydalanuvchi', 'Balans', 'Vazifa', 'Holat', "Ro'yxat", 'Amallar'], d.items.map(u =>
     '<tr><td><b>' + esc(u.displayName) + '</b>' + (u.username ? ' <span class="muted">@' + esc(u.username) + '</span>' : '') + '<div class="mono muted">' + esc(u.telegramId) + '</div></td>' +
-    '<td>' + money(u.credits) + '<div class="muted" style="font-size:11px">band: ' + money(u.reserved) + '</div></td>' +
+    '<td>' + money(u.credits) + '<div class="muted" style="font-size:11px">ajratilgan: ' + money(u.reserved) + '</div></td>' +
     '<td>' + money(u.completedTasksCount) + '</td>' +
     '<td>' + (u.status === 'blocked' ? '<span class="pill err">bloklangan</span>' : '<span class="pill ok">faol</span>') + '</td>' +
     '<td class="muted">' + esc(u.registeredAt) + '</td>' +
@@ -715,7 +715,7 @@ async function loadAnalytics() {
   const d = await api('/api/admin/analytics');
   const t = d.totals;
   $('#an-cards').innerHTML = [['Foydalanuvchilar', t.users], ['Kanallar', t.channels], ['Faol buyurtmalar', t.activeOrders],
-    ['Bajarilgan vazifalar', t.tasksVerified], ['Balansdagi kredit', t.creditsAvailable], ['Band kredit', t.creditsReserved],
+    ['Bajarilgan vazifalar', t.tasksVerified], ['Balansdagi kredit', t.creditsAvailable], ['Kanallarga ajratilgan', t.creditsReserved],
     ['Sarflangan', t.creditsSpent], ['Referallar', t.referrals], ['Ochiq shikoyat', t.complaintsOpen]]
     .map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + money(v) + '</div></div>').join('');
   $('#an-days').innerHTML = table(['Sana', 'Yangi user', 'Buyurtma', 'Tasdiqlangan', 'Shikoyat'],

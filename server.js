@@ -1296,7 +1296,10 @@ var STR = {
     start_back: "Assalomu alaykum, {name}! 🚀\n\nBu Telegram va Instagram o‘zaro o‘sish platformasi.\nBoshqa kanallarga obuna bo‘lib kredit ishlang va o‘z kanalingizga obunachi buyurtma qiling.\n\n{balance}",
     guide: "📖 <b>Bot qanday ishlaydi</b>\n\nBot ikki ish uchun kerak:\n1) Boshqa kanallarga obuna bo‘lib <b>kredit</b> ishlaysiz\n2) Shu kredit bilan o‘z kanalingizga <b>obunachi</b> yig‘asiz\n\n💰 <b>Kredit</b> — bot ichidagi hisob birligi. 1 obunachi = {price} kredit. Pul emas.\n\n1️⃣ “📋 Vazifalar” → kanalga obuna bo‘ling → “✅ Obuna bo‘ldim”. Bot o‘zi tekshiradi, har biri uchun +{reward} kredit.\n2️⃣ Kanalingizni ulash: botni kanalga <b>administrator</b> qiling → “📢 Kanallarim” → “➕ Kanal qo‘shish” → manzilni yuboring.{bonus}\n3️⃣ “📢 Kanallarim” → kanal → nechta obunachi kerakligini yozing → tasdiqlang.\n4️⃣ “👥 Referal tizimi” — do‘stingiz bitta vazifa bajarsa, bonus sizga: +{ref} kredit.\n\nBatafsil: “🛟 Yordam”.",
     bonus_line: "\nBirinchi kanal uchun +{bonus} kredit sovg‘a.",
-    bal: "💰 Balans: <b>{a}</b> kredit  •  🔒 Band: {r} kredit",
+    bal: "💰 Balans: <b>{a}</b> kredit",
+    auto_order_lines: "\n\n🛒 <b>Avtomatik taqsimot</b>\n{list}",
+    auto_order_item: "• “{title}” — {qty} ta obunachi ({cost} kredit)",
+    ch_alloc_short: "💳 {a} kredit ajratilgan",
     tasks_none: "📋 <b>Hozircha vazifa yo‘q</b>\n\nSababi: {reason}\n\n{balance}",
     tasks_reason_orders: "hozir tizimda faol buyurtma yo‘q — hech kim obunachi buyurtma qilmagan. Keyinroq yana urinib ko‘ring.",
     tasks_reason_done: "siz mavjud barcha kanallarga obuna bo‘lib bo‘lgansiz. Yangi buyurtma tushishi bilan vazifa shu yerda paydo bo‘ladi.",
@@ -1322,16 +1325,16 @@ var STR = {
     ord_title: "🛒 <b>Buyurtmalaringiz: {n} ta</b>\n{balance}\n\n{list}",
     ord_none: "Hali buyurtma bermagansiz.\n\n“📢 Kanallarim” → kanalingizni tanlang → nechta obunachi kerakligini yozing.",
     ord_qty: "🛒 <b>{title}</b>\n\nNechta obunachi kerakligini yozing (10–10000).\n• Narx: {unit} kredit / 1 ta\n• {balance}\n• Shu kredit bilan ko‘pi bilan: {max} ta\n\nBekor qilish: /cancel",
-    ord_summary: "📝 <b>Buyurtma xulosasi</b>\n\n• {title}\n• Miqdor: <b>{qty}</b> ta\n• Narx: {unit} × {qty} = <b>{total}</b> kredit\n• Buyurtmadan keyingi balans: {left} kredit\n\nTasdiqlasangiz kredit band qilinadi.",
+    ord_summary: "📝 <b>Buyurtma xulosasi</b>\n\n• {title}\n• Miqdor: <b>{qty}</b> ta\n• Narx: {unit} × {qty} = <b>{total}</b> kredit\n• Buyurtmadan keyingi balans: {left} kredit\n\nTasdiqlasangiz kredit shu kanalga ajratiladi.",
     ord_yes: "✅ Tasdiqlash",
     ord_no: "❌ Bekor qilish",
-    ord_created: "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)\n\nObunachilar navbat bilan qo‘shiladi.",
+    ord_created: "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (kanalga ajratildi)\n\nObunachilar navbat bilan qo‘shiladi.",
     save_err: "⚠️ Ma’lumotni saqlashda xatolik yuz berdi. Amal bajarilmadi — birozdan so‘ng qayta urinib ko‘ring.",
     ord_token_missing: "⚠️ Buyurtma ma’lumoti eskirgan yoki tasdiqlash kaliti yo‘q. Qaytadan boshlang: Kanallarim → kanal → miqdor.",
     ord_inflight: "⏳ Buyurtma yaratilmoqda. Takroriy bosish yangi buyurtma yaratmaydi — bir necha soniyadan so‘ng holatni tekshiring.",
-    ord_cancelled: "❌ Buyurtma bekor qilindi. Kredit band qilinmadi.",
+    ord_cancelled: "❌ Buyurtma bekor qilindi. Kredit sarflanmadi.",
     ord_short: "❌ Kredit yetmayapti.\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {lack} kredit\n\n📋 Vazifalarni bajarib kredit to‘plang.",
-    stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit — ishlatsa bo‘ladigan\n🔒 Band: {r} kredit — faol buyurtmaga band\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
+    stats_title: "📊 <b>Statistika</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balans: <b>{a}</b> kredit — ishlatsa bo‘ladigan\n💸 Sarflangan: {s} kredit\n↩️ Qaytarilgan: {ref} kredit\n✅ Bajarilgan vazifalar: {done} ta\n📢 Kanallar: {ch} ta\n🛒 Faol buyurtmalar: {ord} ta",
     ref_title: "👥 <b>Referal tizimi</b>\n\nDo‘stingiz shu havola bilan kirib <b>bitta vazifa</b> bajarsa, sizga <b>+{reward} kredit</b> bonus beriladi.\nBonus kanalingizga obunachi sifatida yo‘naltiriladi (1 obunachi = {unit} kredit).\n\nTaklif qilganlar: {n} ta • Yo‘naltirilgan bonuslar: {paid} ta{pending}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
     ref_pending: "\n\n🎁 Yo‘naltirilmagan bonus: <b>{amount} kredit</b>{hint}",
     ref_alloc: "🎁 Bonusni kanalga yo‘naltirish",
@@ -1357,7 +1360,7 @@ var STR = {
     st_answered: "✅ javob berilgan",
     st_closed: "🔒 yopilgan",
     set_rates: "📊 <b>Kredit qoidalari</b>\n\n• 1 tasdiqlangan obuna = <b>{tg}</b> kredit\n• 1 obunachi buyurtmasi = <b>{per}</b> kredit\n• 1 faol referal = <b>{ref}</b> kredit\n• Birinchi kanal uchun sovg‘a = <b>{link}</b> kredit\n• Ro‘yxatdan o‘tish sovg‘asi = <b>{signup}</b> kredit\n\nKredit — pul emas, bot ichidagi hisob birligi. Qiymatlarni admin o‘zgartiradi.",
-    set_info: "👤 <b>Ma’lumotlarim</b>\n\nIsm: {name}\nID: <code>{id}</code>\nUsername: {username}\nTil: {lang}\nRo‘yxatdan: {date}\n\n💰 Balans: <b>{a}</b> · 🔒 Band: {r}\n💸 Sarf: {s} · ↩️ Qaytim: {ref}\n\n📢 Kanallar: {ch} · 📸 Instagram: {ig}\n✅ Vazifalar: {done} · 🛒 Faol buyurtma: {ord}\n👥 Referallar: {refs} · 🛟 Murojaatlar: {tickets}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
+    set_info: "👤 <b>Ma’lumotlarim</b>\n\nIsm: {name}\nID: <code>{id}</code>\nUsername: {username}\nTil: {lang}\nRo‘yxatdan: {date}\n\n💰 Balans: <b>{a}</b>\n💸 Sarf: {s} · ↩️ Qaytim: {ref}\n\n📢 Kanallar: {ch} · 📸 Instagram: {ig}\n✅ Vazifalar: {done} · 🛒 Faol buyurtma: {ord}\n👥 Referallar: {refs} · 🛟 Murojaatlar: {tickets}\n\n🔗 Havolangiz:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Adminga murojaat</b>\n\nMuammo yoki taklifingizni bitta xabar bilan yozing — javob shu chatga keladi.\n\nBekor qilish: /cancel",
     help: "🛟 <b>Yordam — qisqa qo‘llanma</b>\n\n📢 <b>Kanallarim</b> — kanal ulash, kanal statistikasi, obunachi buyurtish.\n📋 <b>Vazifalar</b> — 10 talik kanallar; obuna bo‘lib “✅ Obuna bo‘ldim” bosing.\n🛒 <b>Buyurtmalarim</b> — buyurtmalar holati; bekor qilsangiz kreditingiz qaytadi.\n📸 <b>Instagram</b> — profil ulash (rasmiy tekshiruv yo‘q, tasdiqlash o‘zingizga asoslanadi).\n👥 <b>Referal</b> — taklif havolasi va bonusni kanalga yo‘naltirish.\n📊 <b>Statistika</b> — balans, sarf, bajarilgan vazifalar.\n⚙️ <b>Sozlamalar</b> — til, bildirishnomalar, kredit qoidalari, ma’lumotlarim, adminga murojaat.\n\n<b>Qoidalar:</b> obuna haqiqiy tekshiriladi; obunadan chiqsangiz kredit qaytarib olinadi; soxta harakatda hisob bloklanadi; kanal uchun bot administrator bo‘lishi shart.",
     cmp_choose: "Muammo turini tanlang:",
@@ -1386,7 +1389,10 @@ var STR = {
     start_back: "Здравствуйте, {name}! 🚀\n\nЭто платформа взаимного роста в Telegram и Instagram.\nПодписывайтесь на другие каналы, зарабатывайте кредиты и заказывайте подписчиков себе.\n\n{balance}",
     guide: "📖 <b>Как работает бот</b>\n\n1) Подписывайтесь на каналы и получайте <b>кредиты</b>\n2) Тратьте кредиты на подписчиков для своего канала\n\n💰 <b>Кредит</b> — внутренняя единица. 1 подписчик = {price} кредитов. Это не деньги.\n\n1️⃣ “📋 Задания” → подпишитесь → “✅ Я подписался”. Бот проверит сам. За каждую подписку +{reward} кредитов.\n2️⃣ Добавление канала: сделайте бота <b>администратором</b> → “📢 Мои каналы” → “➕ Добавить канал” → отправьте адрес.{bonus}\n3️⃣ “📢 Мои каналы” → канал → укажите количество → подтвердите.\n4️⃣ “👥 Рефералы” — друг выполнит одно задание, бонус вам: +{ref} кредитов.\n\nПодробнее: “🛟 Помощь”.",
     bonus_line: "\nЗа первый канал +{bonus} кредитов.",
-    bal: "💰 Баланс: <b>{a}</b> кредитов  •  🔒 Резерв: {r}",
+    bal: "💰 Баланс: <b>{a}</b> кредитов",
+    auto_order_lines: "\n\n🛒 <b>Автоматическое распределение</b>\n{list}",
+    auto_order_item: "• «{title}» — {qty} подписчиков ({cost} кредитов)",
+    ch_alloc_short: "💳 выделено {a} кредитов",
     tasks_none: "📋 <b>Заданий пока нет</b>\n\nПричина: {reason}\n\n{balance}",
     tasks_reason_orders: "сейчас нет активных заказов — никто ещё не заказывал подписчиков. Попробуйте позже.",
     tasks_reason_done: "вы уже подписаны на все доступные каналы. Новые задания появятся здесь после новых заказов.",
@@ -1412,16 +1418,16 @@ var STR = {
     ord_title: "🛒 <b>Ваши заказы: {n}</b>\n{balance}\n\n{list}",
     ord_none: "Заказов пока нет.\n\n“📢 Мои каналы” → выберите канал → укажите количество.",
     ord_qty: "🛒 <b>{title}</b>\n\nСколько подписчиков нужно? (10–10000)\n• Цена: {unit} кредитов за 1\n• {balance}\n• Максимум на баланс: {max}\n\nОтмена: /cancel",
-    ord_summary: "📝 <b>Проверьте заказ</b>\n\n• {title}\n• Количество: <b>{qty}</b>\n• Цена: {unit} × {qty} = <b>{total}</b> кредитов\n• Баланс после заказа: {left}\n\nПосле подтверждения кредиты будут зарезервированы.",
+    ord_summary: "📝 <b>Проверьте заказ</b>\n\n• {title}\n• Количество: <b>{qty}</b>\n• Цена: {unit} × {qty} = <b>{total}</b> кредитов\n• Баланс после заказа: {left}\n\nПосле подтверждения кредиты будут выделены на этот канал.",
     ord_yes: "✅ Подтвердить",
     ord_no: "❌ Отмена",
-    ord_created: "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)\n\nПодписчики добавляются по очереди.",
+    ord_created: "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (выделено каналу)\n\nПодписчики добавляются по очереди.",
     save_err: "⚠️ Не удалось сохранить данные. Действие не выполнено — попробуйте ещё раз.",
     ord_token_missing: "⚠️ Данные заказа устарели или отсутствует ключ подтверждения. Начните заново: Мои каналы → канал → количество.",
     ord_inflight: "⏳ Заказ создаётся. Повторное нажатие не создаст новый заказ — проверьте статус через несколько секунд.",
     ord_cancelled: "❌ Заказ отменён. Кредиты не списаны.",
     ord_short: "❌ Недостаточно кредитов.\n\nНужно: {need}\nУ вас: {have}\nНе хватает: {lack}\n\n📋 Выполняйте задания, чтобы заработать кредиты.",
-    stats_title: "📊 <b>Статистика</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Баланс: <b>{a}</b>\n🔒 Резерв: {r}\n💸 Израсходовано: {s}\n↩️ Возвращено: {ref}\n✅ Выполнено заданий: {done}\n📢 Каналов: {ch}\n🛒 Активных заказов: {ord}",
+    stats_title: "📊 <b>Статистика</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Баланс: <b>{a}</b>\n💸 Израсходовано: {s}\n↩️ Возвращено: {ref}\n✅ Выполнено заданий: {done}\n📢 Каналов: {ch}\n🛒 Активных заказов: {ord}",
     ref_title: "👥 <b>Рефералы</b>\n\nДруг зайдёт по вашей ссылке и выполнит <b>одно задание</b> — вы получите <b>+{reward} кредитов</b>.\nБонус направляется на ваш канал как подписчики (1 подписчик = {unit} кредитов).\n\nПриглашено: {n} • Бонусов направлено: {paid}{pending}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
     ref_pending: "\n\n🎁 Ненаправленный бонус: <b>{amount} кредитов</b>{hint}",
     ref_alloc: "🎁 Направить бонус на канал",
@@ -1447,7 +1453,7 @@ var STR = {
     st_answered: "✅ отвечено",
     st_closed: "🔒 закрыто",
     set_rates: "📊 <b>Правила кредитов</b>\n\n• 1 подтверждённая подписка = <b>{tg}</b> кредитов\n• 1 подписчик в заказе = <b>{per}</b> кредитов\n• 1 активный реферал = <b>{ref}</b> кредитов\n• Бонус за первый канал = <b>{link}</b> кредитов\n• Бонус за регистрацию = <b>{signup}</b> кредитов\n\nКредит — не деньги, а внутренняя единица бота. Значения меняет администратор.",
-    set_info: "👤 <b>Мои данные</b>\n\nИмя: {name}\nID: <code>{id}</code>\nUsername: {username}\nЯзык: {lang}\nРегистрация: {date}\n\n💰 Баланс: <b>{a}</b> · 🔒 Резерв: {r}\n💸 Израсходовано: {s} · ↩️ Возвращено: {ref}\n\n📢 Каналов: {ch} · 📸 Instagram: {ig}\n✅ Заданий: {done} · 🛒 Активных заказов: {ord}\n👥 Рефералов: {refs} · 🛟 Обращений: {tickets}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
+    set_info: "👤 <b>Мои данные</b>\n\nИмя: {name}\nID: <code>{id}</code>\nUsername: {username}\nЯзык: {lang}\nРегистрация: {date}\n\n💰 Баланс: <b>{a}</b>\n💸 Израсходовано: {s} · ↩️ Возвращено: {ref}\n\n📢 Каналов: {ch} · 📸 Instagram: {ig}\n✅ Заданий: {done} · 🛒 Активных заказов: {ord}\n👥 Рефералов: {refs} · 🛟 Обращений: {tickets}\n\n🔗 Ваша ссылка:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Написать администратору</b>\n\nОпишите проблему или предложение одним сообщением — ответ придёт в этот чат.\n\nОтмена: /cancel",
     help: "🛟 <b>Помощь — краткое руководство</b>\n\n📢 <b>Мои каналы</b> — добавить канал, статистика, заказ подписчиков.\n📋 <b>Задания</b> — 10 каналов; подпишитесь и нажмите “✅ Я подписался”.\n🛒 <b>Мои заказы</b> — статус заказов; при отмене кредиты возвращаются.\n📸 <b>Instagram</b> — добавление профиля (официальной проверки нет).\n👥 <b>Рефералы</b> — ссылка и направление бонуса на канал.\n📊 <b>Статистика</b> — баланс, расход, задания.\n⚙️ <b>Настройки</b> — язык, уведомления, правила кредитов, мои данные, связь с админом.\n\n<b>Правила:</b> подписка проверяется; при отписке кредиты списываются; за обман аккаунт блокируется; бот должен быть администратором канала.",
     cmp_choose: "Выберите тип проблемы:",
@@ -1476,7 +1482,10 @@ var STR = {
     start_back: "Hello, {name}! 🚀\n\nThis is a Telegram and Instagram growth exchange.\nSubscribe to other channels to earn credits, then order subscribers for your own.\n\n{balance}",
     guide: "📖 <b>How the bot works</b>\n\n1) Subscribe to channels and earn <b>credits</b>\n2) Spend credits on subscribers for your channel\n\n💰 <b>Credit</b> — internal unit. 1 subscriber = {price} credits. Not money.\n\n1️⃣ “📋 Tasks” → subscribe → “✅ I subscribed”. The bot verifies. Each subscription gives +{reward} credits.\n2️⃣ Add channel: make the bot <b>administrator</b> → “📢 My channels” → “➕ Add channel” → send the address.{bonus}\n3️⃣ “📢 My channels” → channel → enter quantity → confirm.\n4️⃣ “👥 Referrals” — a friend completes one task, you get +{ref} credits.\n\nDetails: “🛟 Help”.",
     bonus_line: "\n+{bonus} credits for your first channel.",
-    bal: "💰 Balance: <b>{a}</b> credits  •  🔒 Reserved: {r}",
+    bal: "💰 Balance: <b>{a}</b> credits",
+    auto_order_lines: "\n\n🛒 <b>Automatic distribution</b>\n{list}",
+    auto_order_item: "• “{title}” — {qty} subscribers ({cost} credits)",
+    ch_alloc_short: "💳 {a} credits allocated",
     tasks_none: "📋 <b>No tasks yet</b>\n\nReason: {reason}\n\n{balance}",
     tasks_reason_orders: "there are no active orders right now — nobody has ordered subscribers yet. Try again later.",
     tasks_reason_done: "you are already subscribed to every available channel. New tasks will appear here as soon as new orders arrive.",
@@ -1502,16 +1511,16 @@ var STR = {
     ord_title: "🛒 <b>Your orders: {n}</b>\n{balance}\n\n{list}",
     ord_none: "No orders yet.\n\n“📢 My channels” → pick a channel → enter quantity.",
     ord_qty: "🛒 <b>{title}</b>\n\nHow many subscribers? (10–10000)\n• Price: {unit} credits each\n• {balance}\n• Maximum with this balance: {max}\n\nCancel: /cancel",
-    ord_summary: "📝 <b>Order summary</b>\n\n• {title}\n• Quantity: <b>{qty}</b>\n• Price: {unit} × {qty} = <b>{total}</b> credits\n• Balance after order: {left}\n\nCredits are reserved after confirmation.",
+    ord_summary: "📝 <b>Order summary</b>\n\n• {title}\n• Quantity: <b>{qty}</b>\n• Price: {unit} × {qty} = <b>{total}</b> credits\n• Balance after order: {left}\n\nAfter confirmation the credits are allocated to this channel.",
     ord_yes: "✅ Confirm",
     ord_no: "❌ Cancel",
-    ord_created: "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)\n\nSubscribers are added in queue order.",
+    ord_created: "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (allocated)\n\nSubscribers are added in queue order.",
     save_err: "⚠️ Could not save the data. The action was not applied — please try again shortly.",
     ord_token_missing: "⚠️ Order details are stale or the confirmation key is missing. Start again: My channels → channel → quantity.",
     ord_inflight: "⏳ The order is being created. Repeating the tap will not create another order — check the status in a few seconds.",
-    ord_cancelled: "❌ Order cancelled. No credits were reserved.",
+    ord_cancelled: "❌ Order cancelled. No credits were spent.",
     ord_short: "❌ Not enough credits.\n\nNeed: {need}\nYou have: {have}\nShortage: {lack}\n\n📋 Complete tasks to earn credits.",
-    stats_title: "📊 <b>Statistics</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balance: <b>{a}</b>\n🔒 Reserved: {r}\n💸 Spent: {s}\n↩️ Refunded: {ref}\n✅ Completed tasks: {done}\n📢 Channels: {ch}\n🛒 Active orders: {ord}",
+    stats_title: "📊 <b>Statistics</b>\n\n👤 {name}\n🆔 {id}\n\n💰 Balance: <b>{a}</b>\n💸 Spent: {s}\n↩️ Refunded: {ref}\n✅ Completed tasks: {done}\n📢 Channels: {ch}\n🛒 Active orders: {ord}",
     ref_title: "👥 <b>Referrals</b>\n\nA friend joins by your link and completes <b>one task</b> — you get <b>+{reward} credits</b>.\nThe bonus is sent to your channel as subscribers (1 subscriber = {unit} credits).\n\nInvited: {n} • Bonuses sent: {paid}{pending}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
     ref_pending: "\n\n🎁 Unallocated bonus: <b>{amount} credits</b>{hint}",
     ref_alloc: "🎁 Send bonus to a channel",
@@ -1537,7 +1546,7 @@ var STR = {
     st_answered: "✅ answered",
     st_closed: "🔒 closed",
     set_rates: "📊 <b>Credit rules</b>\n\n• 1 verified subscription = <b>{tg}</b> credits\n• 1 ordered subscriber = <b>{per}</b> credits\n• 1 active referral = <b>{ref}</b> credits\n• First channel bonus = <b>{link}</b> credits\n• Signup bonus = <b>{signup}</b> credits\n\nA credit is not money — it is the bot's internal unit. Values are changed by the administrator.",
-    set_info: "👤 <b>My data</b>\n\nName: {name}\nID: <code>{id}</code>\nUsername: {username}\nLanguage: {lang}\nRegistered: {date}\n\n💰 Balance: <b>{a}</b> · 🔒 Reserved: {r}\n💸 Spent: {s} · ↩️ Refunded: {ref}\n\n📢 Channels: {ch} · 📸 Instagram: {ig}\n✅ Tasks: {done} · 🛒 Active orders: {ord}\n👥 Referrals: {refs} · 🛟 Requests: {tickets}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
+    set_info: "👤 <b>My data</b>\n\nName: {name}\nID: <code>{id}</code>\nUsername: {username}\nLanguage: {lang}\nRegistered: {date}\n\n💰 Balance: <b>{a}</b>\n💸 Spent: {s} · ↩️ Refunded: {ref}\n\n📢 Channels: {ch} · 📸 Instagram: {ig}\n✅ Tasks: {done} · 🛒 Active orders: {ord}\n👥 Referrals: {refs} · 🛟 Requests: {tickets}\n\n🔗 Your link:\nhttps://t.me/{bot}?start={code}",
     set_support_prompt: "🛟 <b>Message the administrator</b>\n\nDescribe the problem or suggestion in one message — the reply arrives in this chat.\n\nCancel: /cancel",
     help: "🛟 <b>Help — quick guide</b>\n\n📢 <b>My channels</b> — add a channel, stats, order subscribers.\n📋 <b>Tasks</b> — 10 channels; subscribe and press “✅ I subscribed”.\n🛒 <b>My orders</b> — order status; credits are refunded on cancel.\n📸 <b>Instagram</b> — add a profile (no official verification).\n👥 <b>Referrals</b> — your link and bonus allocation.\n📊 <b>Statistics</b> — balance, spending, tasks.\n⚙️ <b>Settings</b> — language, notifications, credit rules, my data, contact admin.\n\n<b>Rules:</b> subscriptions are verified; unsubscribing revokes credits; cheating blocks the account; the bot must be a channel administrator.",
     cmp_choose: "Choose the problem type:",
@@ -1582,7 +1591,7 @@ Object.assign(STR.uz, {
   "paused": "⏸ Vazifalar vaqtincha to‘xtatilgan. Keyinroq urinib ko‘ring.",
   "ig_off": "📸 Instagram bo‘limi hozircha o‘chirilgan.",
   "ig_note": "⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi.",
-  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nSo‘ralgan: {req} ta\n✅ Tasdiqlangan: {ver} ta\n👥 Faol: {act} ta\n➖ Chiqqan: {unsub} ta\n⏳ Kutilmoqda: {pend} ta\n\n🔑 Nazoratchilar: {ctl}\n⚠️ Shikoyatlar: {cmp} ta\n\n🛒 <b>Buyurtma tarixi:</b>\n{hist}\n\n{balance}",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nSo‘ralgan: {req} ta\n✅ Tasdiqlangan: {ver} ta\n👥 Faol: {act} ta\n➖ Chiqqan: {unsub} ta\n⏳ Kutilmoqda: {pend} ta\n\n💳 Kanalga ajratilgan: <b>{alloc}</b> kredit\n\n🔑 Nazoratchilar: {ctl}\n⚠️ Shikoyatlar: {cmp} ta\n\n🛒 <b>Buyurtma tarixi:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Kanal ulash — 3 qadam</b>\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBekor qilish: /cancel",
   "start_ask_channel": "📢 <b>Kanalingizni botga ulang</b>\n\nO‘z kanalingizga obunachi buyurtma qilish uchun kanalni botga ulashingiz kerak:\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. «{btn}» tugmasini bosing\n3. Kanal manzilini yuboring: <code>@mening_kanalim</code>{bonus}\n\nBekor qilish: /cancel",
   "choose_lang": "🌐 <b>Tilni tanlang</b>\n\nKeyingi qadamlar tanlangan tilda ko‘rsatiladi.",
@@ -1593,7 +1602,7 @@ Object.assign(STR.uz, {
   "choose_menu": "Kerakli amalni pastdagi menyudan tanlang.",
   "cancelled": "Bekor qilindi.",
   "lang_saved": "✅ Til o‘zgartirildi.",
-  "ord_fifo_short": "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (band qilindi)",
+  "ord_fifo_short": "🛒 <b>Buyurtma qabul qilindi!</b>\n\n• {title}\n• Miqdor: {qty}\n• Narx: {total} kredit (kanalga ajratildi)",
   "ch_err_address": "❌ Manzil noto‘g‘ri. Kanalingiz manzilini yuboring, masalan: <code>@mening_kanalim</code>\n\nBekor qilish: /cancel",
   "ch_err_channel": "❌ <b>Kanalni ochib bo‘lmadi.</b>\n\nSabab: Telegram bu manzilni topmadi yoki kanal o‘chirilgan/yopiq.\n\n• Kanal <b>ommaviy (public)</b> bo‘lishi shart\n• Manzil @ bilan yozilsin: <code>@mening_kanalim</code>\n\nBoshqa manzil yuboring yoki /cancel bosing.",
   "ch_err_noadmin": "❌ <b>Bot bu kanalda administrator emas.</b>\n\nBu xato faqat Telegram botni kanal a’zosi sifatida ko‘rmaganda chiqadi.\n\nKanal sozlamalari → <b>Administratorlar</b> → botni qo‘shing (obunachilarni ko‘rish huquqi bilan) → manzilni qayta yuboring.",
@@ -1636,7 +1645,7 @@ Object.assign(STR.ru, {
   "paused": "⏸ Задания временно приостановлены. Попробуйте позже.",
   "ig_off": "📸 Раздел Instagram пока отключён.",
   "ig_note": "⚠️ В Instagram подтверждение основано на вашем слове — проверяет администратор.",
-  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nЗаказано: {req}\n✅ Подтверждено: {ver}\n👥 Активные: {act}\n➖ Отписались: {unsub}\n⏳ В ожидании: {pend}\n\n🔑 Контроллеры: {ctl}\n⚠️ Обращения: {cmp}\n\n🛒 <b>История заказов:</b>\n{hist}\n\n{balance}",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nЗаказано: {req}\n✅ Подтверждено: {ver}\n👥 Активные: {act}\n➖ Отписались: {unsub}\n⏳ В ожидании: {pend}\n\n💳 Выделено на канал: <b>{alloc}</b> кредитов\n\n🔑 Контроллеры: {ctl}\n⚠️ Обращения: {cmp}\n\n🛒 <b>История заказов:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Добавление канала — 3 шага</b>\n\n1. Сделайте бота <b>администратором</b>\n2. Отправьте адрес канала, например: <code>@moy_kanal</code>\n3. Бот проверит и добавит\n\nОтмена: /cancel",
   "start_ask_channel": "📢 <b>Подключите свой канал к боту</b>\n\nЧтобы заказывать подписчиков на свой канал, подключите его к боту:\n\n1. Сделайте бота <b>администратором</b> канала\n2. Нажмите «{btn}»\n3. Отправьте адрес канала: <code>@moy_kanal</code>{bonus}\n\nОтмена: /cancel",
   "choose_lang": "🌐 <b>Выберите язык</b>\n\nДальнейшие шаги будут показаны на выбранном языке.",
@@ -1647,7 +1656,7 @@ Object.assign(STR.ru, {
   "choose_menu": "Выберите действие в меню ниже.",
   "cancelled": "Отменено.",
   "lang_saved": "✅ Язык изменён.",
-  "ord_fifo_short": "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (резерв)",
+  "ord_fifo_short": "🛒 <b>Заказ принят!</b>\n\n• {title}\n• Количество: {qty}\n• Цена: {total} кредитов (выделено каналу)",
   "ch_err_address": "❌ Неверный адрес. Отправьте адрес канала, например: <code>@moy_kanal</code>\n\nОтмена: /cancel",
   "ch_err_channel": "❌ <b>Канал не удалось открыть.</b>\n\nПричина: Telegram не нашёл адрес, либо канал удалён/закрыт.\n\n• Канал должен быть <b>публичным</b>\n• Адрес с @: <code>@moy_kanal</code>\n\nОтправьте другой адрес или /cancel.",
   "ch_err_noadmin": "❌ <b>Бот не администратор этого канала.</b>\n\nЭта ошибка возникает только когда Telegram не видит бота в канале.\n\nНастройки канала → <b>Администраторы</b> → добавьте бота (с правом просмотра участников) → отправьте адрес снова.",
@@ -1690,7 +1699,7 @@ Object.assign(STR.en, {
   "paused": "⏸ Tasks are temporarily paused. Try later.",
   "ig_off": "📸 The Instagram module is currently off.",
   "ig_note": "⚠️ Instagram confirmation is based on your word — reviewed by an admin.",
-  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nRequested: {req}\n✅ Verified: {ver}\n👥 Active: {act}\n➖ Unsubscribed: {unsub}\n⏳ Pending: {pend}\n\n🔑 Controllers: {ctl}\n⚠️ Complaints: {cmp}\n\n🛒 <b>Order history:</b>\n{hist}\n\n{balance}",
+  "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nRequested: {req}\n✅ Verified: {ver}\n👥 Active: {act}\n➖ Unsubscribed: {unsub}\n⏳ Pending: {pend}\n\n💳 Allocated to channel: <b>{alloc}</b> credits\n\n🔑 Controllers: {ctl}\n⚠️ Complaints: {cmp}\n\n🛒 <b>Order history:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Add a channel — 3 steps</b>\n\n1. Make the bot an <b>administrator</b>\n2. Send the channel address, e.g. <code>@my_channel</code>\n3. The bot verifies and adds it\n\nCancel: /cancel",
   "start_ask_channel": "📢 <b>Connect your channel to the bot</b>\n\nTo order subscribers for your channel, link it to the bot:\n\n1. Make the bot an <b>administrator</b> of your channel\n2. Press “{btn}”\n3. Send the channel address: <code>@my_channel</code>{bonus}\n\nCancel: /cancel",
   "choose_lang": "🌐 <b>Choose a language</b>\n\nNext steps will be shown in the selected language.",
@@ -1710,7 +1719,7 @@ Object.assign(STR.en, {
   "ch_rights_warn": "\n\n⚠️ The bot is an administrator, but “invite users” is disabled. Membership checks work; enabling that right is recommended.",
   "ch_bots_missing": "\n\nℹ️ <b>Bots that are not administrators of this channel:</b> {bots}.\n\nThe channel works — <b>at least one</b> bot with administrator rights is enough. Checks are not performed through these bots; you can add them for extra reliability.",
   "ch_lost_warn": "⛔ <b>Attention:</b> the bot is not an administrator of this channel. New tasks are not issued and orders are not accepted. Channel settings → Administrators → add the bot, then link the channel again.",
-  "ch_err_order": "⛔ <b>Order was not created.</b>\n\nReason: the bot's rights in <b>{title}</b> could not be confirmed. No credits were reserved.",
+  "ch_err_order": "⛔ <b>Order was not created.</b>\n\nReason: the bot's rights in <b>{title}</b> could not be confirmed. No credits were spent.",
   "ch_admin_lost_msg": "⚠️ The bot lost administrator rights in <b>{title}</b>.\n\nNew tasks for this channel are <b>not issued</b> and active orders are paused. Credits and history are preserved.\n\nFix: Channel settings → Administrators → add the bot, then “My channels” → channel → link again.",
   "ch_admin_restored_msg": "✅ Bot rights in <b>{title}</b> are restored. The channel accepts tasks again.",
   "verify_perm_err": "\n\n⛔ {n} channel(s) could not be checked: the bot is not an administrator there or the channel was deleted. This is not counted as an unsubscribe — channel owners were notified.",
@@ -1738,7 +1747,7 @@ Object.assign(STR.en, {
   "acc_bot_ok": "admin ✅",
   "acc_bot_no": "not admin ⛔",
   "acc_none": "— no channel linked yet",
-  "ord_fifo_short": "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (reserved)"
+  "ord_fifo_short": "🛒 <b>Order accepted!</b>\n\n• {title}\n• Quantity: {qty}\n• Price: {total} credits (allocated)"
 });
 
 var TRMAP = {
@@ -2121,64 +2130,85 @@ async function grantChannelLinkBonus(u, ch) {
   }
   return res.value;
 }
-// Balansdagi kreditni foydalanuvchining o'z kanaliga avtomatik buyurtmaga
-// aylantiradi (1 kredit = 1 obunachi). Shu tufayli kredit bo'sh turmaydi va
-// navbatda boshqa foydalanuvchilar uchun vazifa paydo bo'ladi.
+// Balansdagi bo'sh kreditni foydalanuvchining o'z kanallariga TENG taqsimlaydi
+// (1 kredit = 1 obunachi). Foydalanuvchi alohida so'ramasa ham kredit bo'sh
+// turmaydi: u kanallariga buyurtma sifatida ajratiladi. Har bir yangi buyurtma
+// kamida 10 ta obunachidan iborat bo'ladi.
 function autoOrderFromBalance(u) {
   if (!u || !S().autoOrderCredits || S().areOrdersFrozen || S().isBotPaused) return null;
-  const chs = db.channels.filter((c) => c.ownerId === u.id);
+  const chs = db.channels.filter((c) => c.ownerId === u.id && !c.disconnectedAt && (!c.status || c.status === "active"));
   if (!chs.length) return null;
   const unit = Math.max(1, perSub());
-  const qty = Math.floor((Number(u.credits.available) || 0) / unit);
-  if (qty < 1) return null;
+  const units = Math.floor((Number(u.credits.available) || 0) / unit);
+  // Buyurtma minimal hajmi — 10 ta; kredit 10 tadan bloklarga bo'linadi.
+  const blocks = Math.floor(units / 10);
+  if (blocks < 1) return null;
+  // Teng taqsimot: har kanalga bir xil miqdorda blok, qoldiq birinchilarga.
+  const base = Math.floor(blocks / chs.length);
+  const extra = blocks % chs.length;
   const activeOf = (c) => db.orders.filter((o) => o.destinationId === c.id && o.status === "active").sort((a, b) => a.seq - b.seq)[0];
-  const withOrder = chs.find((c) => activeOf(c));
-  // Spec §6: buyurtmani foydalanuvchi o'zi yaratadi (miqdorni o'zi kiritadi).
-  // Shuning uchun faqat MAVJUD faol buyurtmaga kredit qo'shamiz; buyurtma
-  // bo'lmasa kredit yig'ilib turadi va bir tugma bilan buyurtmaga aylanadi.
-  if (!withOrder) return null;
-  const ch = withOrder;
-  const cost = qty * unit;
-  u.credits.available -= cost;
-  u.credits.reserved += cost;
-  let o = activeOf(ch);
-  if (o) {
-    o.requestedQuantity += qty;
-    o.pendingQuantity += qty;
-    o.totalCost = (o.totalCost || 0) + cost;
-    // Bepul birliklardan iborat buyurtmaga pullik birlik qo'shilsa, birlik
-    // narxi yozilishi shart — aks holda tasdiqlashda `reserved` hech qachon
-    // kamaymaydi va kredit qaytarilmaydi.
-    if (!(Number(o.unitCost) > 0)) o.unitCost = unit;
-  } else {
-    o = {
-      id: nid("ord"),
-      seq: ++db.seq,
-      userId: u.id,
-      userName: u.displayName,
-      destinationId: ch.id,
-      destinationTitle: ch.title,
-      platform: "telegram",
-      requestedQuantity: qty,
-      verifiedQuantity: 0,
-      pendingQuantity: qty,
-      cancelledQuantity: 0,
-      unitCost: unit,
-      totalCost: cost,
-      freeUnits: 0,
-      status: "active",
-      source: "auto_balance",
-      createdAt: nowStr(),
-      ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
-    };
-    db.orders.push(o);
-    u.activeOrdersCount = (u.activeOrdersCount || 0) + 1;
+  const items = [];
+  for (let i = 0; i < chs.length; i++) {
+    const ch = chs[i];
+    const qty = (base + (i < extra ? 1 : 0)) * 10;
+    if (qty < 10) continue;
+    const cost = qty * unit;
+    if (cost > (Number(u.credits.available) || 0) + 1e-9) continue;
+    u.credits.available -= cost;
+    u.credits.reserved += cost;
+    let o = activeOf(ch);
+    if (o) {
+      o.requestedQuantity += qty;
+      o.pendingQuantity += qty;
+      o.totalCost = (o.totalCost || 0) + cost;
+      // Bepul birliklardan iborat buyurtmaga pullik birlik qo'shilsa, birlik
+      // narxi yozilishi shart — aks holda tasdiqlashda `reserved` hech qachon
+      // kamaymaydi va kredit qaytarilmaydi.
+      if (!(Number(o.unitCost) > 0)) o.unitCost = unit;
+    } else {
+      o = {
+        id: nid("ord"),
+        seq: ++db.seq,
+        userId: u.id,
+        userName: u.displayName,
+        destinationId: ch.id,
+        destinationTitle: ch.title,
+        platform: "telegram",
+        requestedQuantity: qty,
+        verifiedQuantity: 0,
+        pendingQuantity: qty,
+        cancelledQuantity: 0,
+        unitCost: unit,
+        totalCost: cost,
+        freeUnits: 0,
+        status: "active",
+        source: "auto_balance",
+        createdAt: nowStr(),
+        ...(CURRENT_OP ? { opId: CURRENT_OP } : {})
+      };
+      db.orders.push(o);
+      u.activeOrdersCount = (u.activeOrdersCount || 0) + 1;
+    }
+    ch.totalRequested += qty;
+    ch.pendingSubscriptions += qty;
+    addTx(u, -cost, "order_spend", "Avtomatik taqsimot: " + ch.title + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}:${o.requestedQuantity}` });
+    items.push({ channel: ch, qty, cost, order: o });
   }
-  ch.totalRequested += qty;
-  ch.pendingSubscriptions += qty;
-  addTx(u, -cost, "order_spend", "Avtomatik buyurtma: " + ch.title + " x" + qty, { orderId: o.id, idempotencyKey: `reserve:${o.id}:${o.requestedQuantity}` });
+  if (!items.length) return null;
   save();
-  return { channel: ch, qty, cost, order: o };
+  return {
+    channel: items[0].channel,
+    qty: items.reduce((a, it) => a + it.qty, 0),
+    cost: items.reduce((a, it) => a + it.cost, 0),
+    order: items[0].order,
+    items
+  };
+}
+// Avtomatik taqsimot haqidagi xabar (bir yoki bir nechta kanal).
+function autoOrderNote(u, auto) {
+  if (!auto || !auto.items || !auto.items.length) return "";
+  const list = auto.items.map((it) => T(u, "auto_order_item", { title: esc(it.channel.title), qty: it.qty, cost: it.cost })).join("\n");
+  return T(u, "auto_order_lines", { list });
 }
 // OPEN — hali yakunlanmagan barcha vazifalar (ichki tekshiruv uchun).
 // FIFO — faqat navbatga qaytariladigan va foydalanuvchiga ko'rsatiladigan
@@ -2915,7 +2945,7 @@ async function verifyBatch(u, platform, chat) {
   for (const n of refNotices) n();
   const notDone = out.deferredTasks.filter((t) => t.status === "PENDING");
   let text = T(u, "verify_ok", { ok: out.verifiedTasks.length, reward: earned, bal: u.credits.available });
-  if (auto && auto.cost > 0) text += T(u, "auto_order_note", { qty: auto.qty, title: esc(auto.channel.title) });
+  if (auto) text += autoOrderNote(u, auto);
   if (notDone.length) text += `
 
 ⏳ <b>Hali obuna bo‘lmaganlar (${notDone.length} ta):</b>
@@ -2952,7 +2982,16 @@ Obuna bo‘lib, yana “✅ Obuna bo‘ldim” tugmasini bosing.`;
   if (!notDone.length && !out.apiErrorTasks.length) await showTasks(u, platform, chat);
 }
 function balanceLine(u) {
-  return T(u, "bal", { a: u.credits.available, r: u.credits.reserved });
+  return T(u, "bal", { a: u.credits.available });
+}
+// Kanalga faol buyurtmalar orqali ajratilgan kredit (hali bajarilmagan qism).
+function channelCredits(chId) {
+  let sum = 0;
+  for (const o of db.orders) {
+    if (o.destinationId !== chId || o.status !== "active") continue;
+    sum += calculateRefundAmount(o).refundCredits || 0;
+  }
+  return sum;
 }
 async function showTasks(u, platform, chat, next) {
   if (platform === "telegram" && S().isTelegramPaused) return send(chat, T(u, "paused"), menuFor(u));
@@ -2986,9 +3025,15 @@ async function showTasks(u, platform, chat, next) {
 // Faqat faol kanallar ro'yxatda; uzilganlari tarix uchun bazada qoladi.
 var channelsOf = (u) => db.channels.filter((c) => !c.disconnectedAt && (c.ownerId === u.id || (c.controllers || []).some((k) => k.userId === u.id)));
 async function showChannels(u, chat) {
+  // Bo'sh turgan kredit kanallarga avtomatik teng taqsimlanadi.
+  await withStateTx(() => autoOrderFromBalance(u));
   const chs = channelsOf(u);
   const list = chs.length
-    ? chs.map((c) => `• <b>${esc(c.title)}</b> (@${esc(c.username)})\n   ✅ ${c.verifiedSubscribers} • ⏳ ${c.pendingSubscriptions}${c.ownerId !== u.id ? " (" + T(u, "ch_controller") + ")" : ""}`).join("\n")
+    ? chs.map((c) => {
+      const alloc = channelCredits(c.id);
+      const allocLine = alloc > 0 ? "\n   " + T(u, "ch_alloc_short", { a: alloc }) : "";
+      return `• <b>${esc(c.title)}</b> (@${esc(c.username)})\n   ✅ ${c.verifiedSubscribers} • ⏳ ${c.pendingSubscriptions}${c.ownerId !== u.id ? " (" + T(u, "ch_controller") + ")" : ""}${allocLine}`;
+    }).join("\n")
     : T(u, "ch_none");
   const rows = chs.map((c) => [
     { text: `📢 ${c.title}`.slice(0, 32), callback_data: `chd:${c.id}` },
@@ -3018,6 +3063,7 @@ async function showChannelDetail(u, ch, chat) {
     act: ch.activeSubscribers,
     unsub: ch.unsubscribedCount,
     pend: ch.pendingSubscriptions,
+    alloc: channelCredits(ch.id),
     ctl: (ch.controllers || []).map((k) => esc(k.displayName)).join(", ") || "—",
     cmp: cmps.length,
     hist,
@@ -3688,7 +3734,7 @@ async function addChannel(u, text, chat) {
     botsMissingText(u, res.bots) +
     (linkBonus > 0 && bonusOk ? T(u, "ch_added_bonus", { bonus: linkBonus, bal: u.credits.available }) : "") +
     (!bonusOk ? "\n\n" + T(u, "save_err") : "") +
-    (autoCh ? T(u, "auto_order_note", { qty: autoCh.qty, title: esc(autoCh.channel.title) }) : "");
+    (autoCh ? autoOrderNote(u, autoCh) : "");
   return send(chat, head + tail, menuFor(u));
 }
 var BOT_ID = 0;
@@ -4195,6 +4241,8 @@ async function handleMessage(msg) {
       // tilda yo'riqnoma va kanal ulash so'rovi yuboriladi.
       await askLanguage(u, chat);
     } else {
+      // Bo'sh turgan kreditlar kanallarga avtomatik taqsimlanadi.
+      await withStateTx(() => autoOrderFromBalance(u));
       await send(chat, T(u, "start_back", { name: esc(u.displayName), balance: balanceLine(u) }), menuFor(u));
       // Til hali tanlanmagan bo'lsa (tanlash oynasi tashlab ketilgan) — yana so'raymiz.
       if (u.langAsked && !u.langChosen) await askLanguage(u, chat);
