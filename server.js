@@ -1584,6 +1584,7 @@ Object.assign(STR.uz, {
   "ig_note": "⚠️ Instagram’da tasdiqlash sizning so‘zingizga asoslanadi — admin tekshiradi.",
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nSo‘ralgan: {req} ta\n✅ Tasdiqlangan: {ver} ta\n👥 Faol: {act} ta\n➖ Chiqqan: {unsub} ta\n⏳ Kutilmoqda: {pend} ta\n\n🔑 Nazoratchilar: {ctl}\n⚠️ Shikoyatlar: {cmp} ta\n\n🛒 <b>Buyurtma tarixi:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Kanal ulash — 3 qadam</b>\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. Kanal manzilini yuboring, masalan: <code>@mening_kanalim</code>\n3. Bot kanalni tekshiradi va ulaydi\n\nBekor qilish: /cancel",
+  "start_ask_channel": "📢 <b>Kanalingizni botga ulang</b>\n\nO‘z kanalingizga obunachi buyurtma qilish uchun kanalni botga ulashingiz kerak:\n\n1. Kanalingizga botni <b>administrator</b> qiling\n2. «{btn}» tugmasini bosing\n3. Kanal manzilini yuboring: <code>@mening_kanalim</code>{bonus}\n\nBekor qilish: /cancel",
   "ch_added": "📢 <b>Kanal ulandi!</b>\n\n• {title} (@{username})\n• Bot admin huquqi: tasdiqlangan ✅",
   "ch_added_bonus": "\n\n🎁 Kanal ulaganingiz uchun <b>+{bonus} kredit</b> sovg‘a!\n💰 Balans: {bal} kredit",
   "verify_none": "Tekshiradigan vazifangiz yo‘q.\n\nAvval “📋 Vazifalar” tugmasini bosing.",
@@ -1636,6 +1637,7 @@ Object.assign(STR.ru, {
   "ig_note": "⚠️ В Instagram подтверждение основано на вашем слове — проверяет администратор.",
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nЗаказано: {req}\n✅ Подтверждено: {ver}\n👥 Активные: {act}\n➖ Отписались: {unsub}\n⏳ В ожидании: {pend}\n\n🔑 Контроллеры: {ctl}\n⚠️ Обращения: {cmp}\n\n🛒 <b>История заказов:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Добавление канала — 3 шага</b>\n\n1. Сделайте бота <b>администратором</b>\n2. Отправьте адрес канала, например: <code>@moy_kanal</code>\n3. Бот проверит и добавит\n\nОтмена: /cancel",
+  "start_ask_channel": "📢 <b>Подключите свой канал к боту</b>\n\nЧтобы заказывать подписчиков на свой канал, подключите его к боту:\n\n1. Сделайте бота <b>администратором</b> канала\n2. Нажмите «{btn}»\n3. Отправьте адрес канала: <code>@moy_kanal</code>{bonus}\n\nОтмена: /cancel",
   "ch_added": "📢 <b>Канал добавлен!</b>\n\n• {title} (@{username})\n• Права администратора: подтверждены ✅",
   "ch_added_bonus": "\n\n🎁 За добавление канала <b>+{bonus} кредитов</b>!\n💰 Баланс: {bal}",
   "verify_none": "Нет заданий для проверки.\n\nСначала нажмите “📋 Задания”.",
@@ -1688,6 +1690,7 @@ Object.assign(STR.en, {
   "ig_note": "⚠️ Instagram confirmation is based on your word — reviewed by an admin.",
   "ch_detail": "📢 <b>{title}</b>\n@{username}\n🆔 <code>{cid}</code>\n\nRequested: {req}\n✅ Verified: {ver}\n👥 Active: {act}\n➖ Unsubscribed: {unsub}\n⏳ Pending: {pend}\n\n🔑 Controllers: {ctl}\n⚠️ Complaints: {cmp}\n\n🛒 <b>Order history:</b>\n{hist}\n\n{balance}",
   "ch_add_steps": "📢 <b>Add a channel — 3 steps</b>\n\n1. Make the bot an <b>administrator</b>\n2. Send the channel address, e.g. <code>@my_channel</code>\n3. The bot verifies and adds it\n\nCancel: /cancel",
+  "start_ask_channel": "📢 <b>Connect your channel to the bot</b>\n\nTo order subscribers for your channel, link it to the bot:\n\n1. Make the bot an <b>administrator</b> of your channel\n2. Press “{btn}”\n3. Send the channel address: <code>@my_channel</code>{bonus}\n\nCancel: /cancel",
   "ch_added": "📢 <b>Channel added!</b>\n\n• {title} (@{username})\n• Admin rights: verified ✅",
   "ch_added_bonus": "\n\n🎁 <b>+{bonus} credits</b> for linking your channel!\n💰 Balance: {bal}",
   "verify_none": "No tasks to check.\n\nPress “📋 Tasks” first.",
@@ -4168,6 +4171,13 @@ async function handleMessage(msg) {
     if (isNew) {
       await send(chat, T(u, "start_new", { name: esc(u.displayName) }), menuFor(u));
       await send(chat, guideText(u));
+      // Yangi foydalanuvchidan kanalini botga ulashni so'raymiz: tugma
+      // mavjud `chadd` oqimini ochadi (kanalni administrator qilish + manzil).
+      const linkBonus = Math.max(0, Number(S().creditRewardChannelLink) || 0);
+      await send(chat, T(u, "start_ask_channel", {
+        btn: T(u, "ch_add"),
+        bonus: linkBonus > 0 ? T(u, "bonus_line", { bonus: linkBonus }) : ""
+      }), inline([[{ text: T(u, "ch_add"), callback_data: "chadd" }]]));
     } else {
       await send(chat, T(u, "start_back", { name: esc(u.displayName), balance: balanceLine(u) }), menuFor(u));
     }
