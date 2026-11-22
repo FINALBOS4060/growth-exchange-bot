@@ -129,7 +129,10 @@ const srv = spawn("node", ["server.js"], {
   env: {
     ...process.env, PORT: String(PORT), TELEGRAM_API_BASE: `http://127.0.0.1:${MOCK}`,
     TELEGRAM_BOT_TOKEN: "TESTTOKEN", ADMIN_PASSWORD: "testpass", DATA_FILE: DB,
-    KEEP_ALIVE: "0", MAINTENANCE_SEC: "2", VERIFY_BATCH: "25"
+    KEEP_ALIVE: "0", MAINTENANCE_SEC: "2", VERIFY_BATCH: "25",
+    // Bu testda «bitta salbiy natija → qulf» xatti-harakati tekshiriladi;
+    // ikki marta tasdiqlash alohida testda (admin-lock-confirm).
+    ADMIN_LOCK_CONFIRM_SEC: "0"
   },
   stdio: [process.env.SHOW_LOGS ? "inherit" : "ignore", "pipe", "pipe"]
 });

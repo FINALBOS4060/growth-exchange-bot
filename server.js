@@ -153,6 +153,11 @@ var ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 var DATA_FILE = process.env.DATA_FILE || path.join(ROOT, "data", "db.json");
 var DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 var PORT = Number(process.env.PORT || 3e3);
+// IKKI MARTA TASDIQLASH: bitta salbiy natija kanalni qulflamaydi. Qulf faqat
+// keyingi tekshiruv shu vaqtdan keyin ham salbiy bo'lsa qo'yiladi (Telegram
+// vaqtincha noto'g'ri javob bersa yoki bot endigina qo'shilgan bo'lsa, kanal
+// behuda yopilib qolmaydi). `0` — bitta natija yetarli (eski xatti-harakat).
+var ADMIN_LOCK_CONFIRM_MS = Math.max(0, Number(process.env.ADMIN_LOCK_CONFIRM_SEC || 45) * 1e3);
 var HOST = process.env.IP || "0.0.0.0";
 var defaultSettings = () => ({
   creditRewardTelegram: 100,
@@ -1254,16 +1259,35 @@ async function checkMemberWith(bot, chat, userId, ctx = {}) {
 // A'zolikni tekshirish. Joriy bot kanalda admin bo'lmasa (Telegram doimiy xato
 // qaytaradi), kanalda admin bo'lgan BOSHQA bot bilan qayta uriniladi — shuning
 // uchun «bitta bot admin bo'lsa yetarli» amalda ham bajariladi.
-async function checkMemberInfo(chat, userId, ctx = {}) {
+// Buyurtma yaratishda kanalning ishlaydigan boti aniqlangan (`botAdminBotId`).
+// Shuning uchun a'zolikni tekshirish SHU botdan boshlanadi: admin bo'lmagan
+// bot bilan behuda (muvaffaqiyatsiz) so'rov ketmaydi — trafik kamayadi va
+// diagnostika to'g'ri botga yoziladi.
+function botFirstForChannel(chat, preferId) {
+  const bots = botsForChecks();
+  const dest = db.channels.find((c) => String(c.channelId) === String(chat) && !c.disconnectedAt) ||
+    db.channels.find((c) => String(c.channelId) === String(chat));
+  const id = String(preferId || (dest && dest.botAdminBotId) || "");
+  const preferred = id ? bots.find((b) => b.id === id) : null;
   const cur = curBot();
-  const first = await checkMemberWith(cur, chat, userId, ctx);
+  const order = [];
+  const push = (b) => {
+    if (b && b.token && !order.some((x) => x.id === b.id)) order.push(b);
+  };
+  push(preferred);
+  push(cur);
+  for (const b of bots) push(b);
+  return order;
+}
+async function checkMemberInfo(chat, userId, ctx = {}) {
+  const order = botFirstForChannel(chat, ctx.preferBotId);
+  if (!order.length) return { result: "error", reason: "no_bot", transient: false };
+  const first = await checkMemberWith(order[0], chat, userId, ctx);
   if (first.result !== "error" || first.transient) return first;
-  // Doimiy xato (bot admin emas / huquq yo'q) — admin huquqi bor BOSHQA
-  // botlar bilan qayta urinamiz. Ro'yxat 3 ta bilan cheklanmaydi: aks holda
-  // 4+ bot bo'lganda admin bot zaxira ro'yxatiga tushmay qolishi mumkin.
-  // Admin botni birinchi qilib chiqamiz (botAdminBotId ma'lum bo'lsa).
-  const others = botsForChecks().filter((b) => b && b.token && !(cur && b.id === cur.id));
-  for (const b of others) {
+  // Doimiy xato (bot admin emas / huquq yo'q) — qolgan botlar bilan qayta
+  // urinamiz. Ro'yxat 3 ta bilan cheklanmaydi: aks holda 4+ bot bo'lganda
+  // admin bot zaxira ro'yxatiga tushmay qolishi mumkin.
+  for (const b of order.slice(1)) {
     const alt = await checkMemberWith(b, chat, userId, { ...ctx, record: false });
     if (alt.result !== "error") return { ...alt, viaBot: b.id };
     if (alt.transient) return first;
@@ -1565,11 +1589,34 @@ function langOf(u) {
   const l = u && u.language;
   return STR[l] ? l : "uz";
 }
+// Admin panelda tahrirlangan matnlar (`settings.textOverrides[til][kalit]`).
+// Standart matn `STR` da qoladi — override faqat ustiga yozadi va bo'sh bo'lsa
+// standart holat tiklanadi.
+function textOverride(lang, key) {
+  const ov = S().textOverrides;
+  const pack = ov && ov[lang];
+  const v = pack && pack[key];
+  return typeof v === "string" && v !== "" ? v : null;
+}
 function T(u, key, vars) {
-  const pack = STR[langOf(u)] || STR.uz;
-  let s = pack[key] != null ? pack[key] : STR.uz[key] != null ? STR.uz[key] : key;
+  const lang = langOf(u);
+  const pack = STR[lang] || STR.uz;
+  let s = textOverride(lang, key);
+  if (s == null) s = pack[key] != null ? pack[key] : STR.uz[key] != null ? STR.uz[key] : key;
   for (const k in vars || {}) s = s.split(`{${k}}`).join(String(vars[k]));
   return s;
+}
+// Menyu tugmalari matni ham tahrirlanadi: foydalanuvchi yuborgan matn standart
+// yozuvga ham, tahrirlangan yozuvga ham mos kelishi kerak — aks holda tugma
+// bosilganda menyu ishlamay qoladi.
+var MENU_BUTTON_KEYS = ["channels", "tasks", "orders", "instagram", "referrals", "stats", "help", "settings"];
+function menuKeyOf(text) {
+  const t = String(text || "");
+  if (LABEL2KEY[t]) return LABEL2KEY[t];
+  for (const lang of Object.keys(STR)) {
+    for (const k of MENU_BUTTON_KEYS) if (T({ language: lang }, "b_" + k) === t) return k;
+  }
+  return "";
 }
 var MENU_KEYS = [["channels", "tasks"], ["orders", "instagram"], ["referrals", "stats"], ["help", "settings"]];
 function menuFor(u) {
@@ -2991,6 +3038,58 @@ function walletCredits(u) {
 function balanceLine(u) {
   return T(u, "bal", { a: walletCredits(u) });
 }
+// Qo'lda buyurtma ham balans bilan bir xil ko'rsatkichni ishlatadi: hamyonning
+// umumiy qoldig'i (kanallarga ajratilgan kredit ham shu qoldiqning bir qismi).
+function orderCredits(u) {
+  return walletCredits(u);
+}
+// Qo'lda buyurtma uchun kredit foydalanuvchining o'z kanallariga ajratilgan
+// qismdan bo'shatiladi: reserved → available. Jami balans o'zgarmaydi (bu
+// sarflash emas, ajratishni qaytarish), lekin jurnalda `order_refund` yozuvi
+// qoladi — `reserved` hisobi shunga tayanadi.
+function releaseAllocatedCredit(u, amount) {
+  let need = Math.max(0, Number(amount) || 0);
+  if (!(need > 0)) return 0;
+  let freed = 0;
+  const orders = db.orders
+    .filter((o) => o.userId === u.id && o.status === "active")
+    .sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
+  for (const o of orders) {
+    if (need < 1 - 1e-9) break;
+    const unit = Number(o.unitCost) || 0;
+    if (!(unit > 0)) continue;
+    const unfulfilled = Math.max(0, (Number(o.requestedQuantity) || 0) - (Number(o.verifiedQuantity) || 0) - (Number(o.cancelledQuantity) || 0));
+    // Bepul birliklar uchun kredit band qilinmagan — ular bo'shatilmaydi.
+    const paid = Math.max(0, unfulfilled - Math.min(unfulfilled, Number(o.freeUnits) || 0));
+    if (!(paid > 0)) continue;
+    const fit = Math.min(paid, Math.floor(need / unit + 1e-9));
+    // Bo'lak 10 tadan kichik bo'lib qolmasin: qolgan buyurtma minimal hajmdan
+    // pastga tushsa, butun bajarilmagan qism bo'shatiladi.
+    const left = paid - fit;
+    const take = left > 0 && left < 10 ? paid : fit;
+    if (take < 1) continue;
+    const credits = take * unit;
+    o.requestedQuantity = Math.max(0, (Number(o.requestedQuantity) || 0) - take);
+    o.pendingQuantity = Math.max(0, (Number(o.pendingQuantity) || 0) - take);
+    o.totalCost = Math.max(0, (Number(o.totalCost) || 0) - credits);
+    const dest = destOf(o.destinationId);
+    if (dest) {
+      if (dest.pendingSubscriptions !== void 0) dest.pendingSubscriptions = Math.max(0, dest.pendingSubscriptions - take);
+      if (dest.pendingFollowers !== void 0) dest.pendingFollowers = Math.max(0, dest.pendingFollowers - take);
+    }
+    if ((Number(o.requestedQuantity) || 0) - (Number(o.verifiedQuantity) || 0) - (Number(o.cancelledQuantity) || 0) <= 0) {
+      o.status = "cancelled";
+      o.completedAt = nowStr();
+      u.activeOrdersCount = Math.max(0, (Number(u.activeOrdersCount) || 0) - 1);
+    }
+    u.credits.reserved = Math.max(0, (Number(u.credits.reserved) || 0) - credits);
+    o.releasedTimes = (Number(o.releasedTimes) || 0) + 1;
+    addTx(u, credits, "order_refund", `Qo'lda buyurtmaga o'tkazildi: ${o.destinationTitle}`, { orderId: o.id, idempotencyKey: `release:${o.id}:${o.releasedTimes}` });
+    freed += credits;
+    need -= credits;
+  }
+  return freed;
+}
 // Kanalga faol buyurtmalar orqali ajratilgan kredit (hali bajarilmagan qism).
 function channelCredits(chId) {
   let sum = 0;
@@ -3326,10 +3425,13 @@ async function prepareOrder(u, destId, qty, chat) {
   if (platform === "instagram" && !S().isInstagramEnabled) return send(chat, T(u, "ig_off"), menuFor(u));
   if (!Number.isInteger(qty) || qty < 10 || qty > 1e4) return send(chat, T(u, "ord_qty_range"));
   const unit = perSub();
-  const chk = calculateOrderAffordability(u.credits, qty, unit);
+  // Qo'lda buyurtma balans bilan bir xil ko'rsatkichdan foydalanadi (umumiy
+  // qoldiq); tasdiqlashda yetishmayotgan qism kanallardagi ajratishdan
+  // bo'shatiladi.
+  const chk = calculateOrderAffordability({ available: orderCredits(u) }, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
-    return send(chat, T(u, "ord_short", { need: chk.totalCost, have: u.credits.available, lack: chk.shortage }), menuFor(u));
+    return send(chat, T(u, "ord_short", { need: chk.totalCost, have: orderCredits(u), lack: chk.shortage }), menuFor(u));
   }
   // `client_token` — MAJBURIY: buyurtma faqat shu kalit bilan yaratiladi va
   // kalit foydalanuvchi + manzil + miqdorga bog'lanadi (spec B).
@@ -3362,7 +3464,7 @@ async function prepareOrder(u, destId, qty, chat) {
     qty,
     unit,
     total: chk.totalCost,
-    left: u.credits.available - chk.totalCost
+    left: orderCredits(u) - chk.totalCost
   }), inline([
     [{ text: T(u, "ord_yes"), callback_data: `ordok:${token}` }, { text: T(u, "ord_no"), callback_data: "ordno:0" }]
   ]));
@@ -3460,23 +3562,11 @@ async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
     } else if (verdict.durableNeg) {
       // Kamida bitta bot ANIQ "admin emas" deb javob berdi va hech bir bot
       // tasdiqlamadi — bitta botning API xatosi buni yashirmaydi (spec §4).
-      // Kanal yopiladi, kredit band qilinmaydi, tarix o'chirilmaydi.
-      const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
-      dest.botHasAdminRights = false;
-      dest.botAdminStatus = neg.status === CHK.NOT_FOUND ? CHK.NOT_FOUND : CHK.NO_BOT;
-      dest.status = "permission_lost";
-      dest.permissionLostAt = dest.permissionLostAt || new Date().toISOString();
-      dest.permissionLostReason = neg.status === CHK.NOT_FOUND ? "bot_not_found" : "no_admin";
-      dest.permissionLostCheckedAt = at;
-      if (!wasLost) auditSys("channel_permission_lost", dest.id, `reason=${dest.permissionLostReason} checkedAt=${at} via=order`);
+      // Qulf IKKI MARTA tasdiqlangandan keyin qo'yiladi (markChannelPermissionLost).
+      // Kredit baribir band qilinmaydi, tarix o'chirilmaydi.
+      markChannelPermissionLost(dest, neg.status === CHK.NOT_FOUND ? "bot_not_found" : "no_admin", at);
       u.state = null;
       save();
-      const owner = userById(dest.ownerId);
-      if (owner && !dest.permissionNotifiedAt) {
-        dest.permissionNotifiedAt = nowStr();
-        if (notifOn(owner, "technical")) notify(owner, T(owner, "ch_admin_lost_msg", { title: esc(dest.title) }));
-        save();
-      }
       return send(chat, T(u, "ch_err_order", { title: esc(dest.title) }) + "\n\n" +
         T(u, neg.status === CHK.LIMITED ? "ch_err_rights" : "ch_err_noadmin"), menuFor(u));
     } else if ((verdict.fresh || []).some((r) => r && r.status === CHK.TOKEN)) {
@@ -3493,10 +3583,10 @@ async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
     }
   }
   const unit = perSub();
-  const chk = calculateOrderAffordability(u.credits, qty, unit);
+  const chk = calculateOrderAffordability({ available: orderCredits(u) }, qty, unit);
   if (!chk.canAfford) {
     u.state = null;
-    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {short} kredit\n\nKredit ishlash uchun “📋 Vazifalar” tugmasini bosing — har bir obuna uchun {reward} kredit beriladi.", { need: chk.totalCost, have: u.credits.available, short: chk.shortage, reward: S().creditRewardTelegram }), menuFor(u));
+    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit\nYetmayapti: {short} kredit\n\nKredit ishlash uchun “📋 Vazifalar” tugmasini bosing — har bir obuna uchun {reward} kredit beriladi.", { need: chk.totalCost, have: orderCredits(u), short: chk.shortage, reward: S().creditRewardTelegram }), menuFor(u));
   }
   // Reservation — INSTANSLARARO kritik bo'lim. Ichida token va balans QAYTA
   // tekshiriladi: tarmoq tekshiruvi (bot huquqi) davomida boshqa instans
@@ -3510,7 +3600,14 @@ async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
   rec.inflight = true;
   rec.claimBy = INSTANCE_ID;
   rec.claimedAtMs = Date.now();
-  const chk2 = calculateOrderAffordability(u.credits, qty, perSub());
+  let chk2 = calculateOrderAffordability(u.credits, qty, perSub());
+  if (!chk2.canAfford) {
+    // Kredit kanallarga ajratilgan bo'lishi mumkin: yetishmagan qism o'z
+    // buyurtmalaridan bo'shatiladi (jami balans o'zgarmaydi).
+    const deficit = chk2.totalCost - (Number(u.credits.available) || 0);
+    if (deficit > 0) releaseAllocatedCredit(u, deficit);
+    chk2 = calculateOrderAffordability(u.credits, qty, perSub());
+  }
   if (!chk2.canAfford) return { state: "no_credit", chk: chk2 };
   const endOp = opStart("ord");
   const snap = creditsSnapshot(u);
@@ -3565,7 +3662,7 @@ async function createOrderConfirmedInner(u, destId, qty, chat, rec) {
   if (tres.state === "busy") return send(chat, T(u, "ord_inflight"), menuFor(u));
   if (tres.state === "no_credit") {
     u.state = null;
-    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit", { need: tres.chk.totalCost, have: u.credits.available }), menuFor(u));
+    return send(chat, TRV(u, "❌ <b>Kredit yetmayapti</b>\n\nKerak: {need} kredit\nSizda: {have} kredit", { need: tres.chk.totalCost, have: orderCredits(u) }), menuFor(u));
   }
   if (tres.state !== "created") return send(chat, T(u, "save_err"), menuFor(u));
   return send(chat, T(u, "ord_created", { title: esc(tres.order.destinationTitle), qty, total: tres.order.totalCost }), menuFor(u));
@@ -3923,9 +4020,55 @@ async function inspectBotAdmin(chatId) {
   return inspectBotAdminFor(curBot(), chatId);
 }
 // Tekshiriladigan botlar: asosiy bot birinchi, keyin yoqilgan ishchi botlar.
+// Tekshiriluvchi botlar: token bo'yicha DEDUPE. Bir xil tokenli ikki yozuv
+// bo'lsa (masalan eski `bot-main` dublikati) Telegram'ga ortiqcha so'rov ketadi
+// va `botAdmins` snapshotida natija `botDbId` bo'yicha bir-birini bosib ketadi.
 function botsForChecks() {
   const list = botsList().filter((b) => b && b.token && b.enabled !== false);
-  return list.slice().sort((a, b) => (a.role === "main" ? 0 : 1) - (b.role === "main" ? 0 : 1));
+  const sorted = list.slice().sort((a, b) => (a.role === "main" ? 0 : 1) - (b.role === "main" ? 0 : 1));
+  const seen = /* @__PURE__ */ new Set();
+  const uniq = [];
+  for (const b of sorted) {
+    if (seen.has(b.token)) continue;
+    seen.add(b.token);
+    uniq.push(b);
+  }
+  return uniq;
+}
+// Bot yozuvlarining ID'lari UNIKAL bo'lishi shart: `botRuns`/`botLocks` va
+// `botAdmins` snapshoti id bo'yicha kalitlanadi. Ikki yozuv bir xil id olsa
+// (masalan ikki `bot-main`) — ulardan biri umuman polling qilmaydi va tekshiruv
+// natijasi snaplashda bir-birini bosib ketadi. Startupda takroriy id yangisiga
+// almashtiriladi; yozuv O'CHIRILMAYDI (token qulfi ikki marta poll qilishdan
+// saqlaydi, `botsForChecks` esa tokenni takrorlamaydi).
+function normalizeBots() {
+  const list = botsList();
+  if (!list.length) return 0;
+  const seenIds = /* @__PURE__ */ new Set();
+  let renamed = 0;
+  for (const b of list) {
+    if (!b.id) {
+      b.id = "bot-" + Math.random().toString(36).slice(2, 10);
+      seenIds.add(b.id);
+      renamed++;
+      continue;
+    }
+    if (!seenIds.has(b.id)) {
+      seenIds.add(b.id);
+      continue;
+    }
+    let fresh = "";
+    do {
+      fresh = b.id + "-" + Math.random().toString(36).slice(2, 6);
+    } while (seenIds.has(fresh) || list.some((x) => x.id === fresh));
+    console.warn(`Bot id takrorlangan edi: ${b.id} → ${fresh} (${b.username || ""})`);
+    for (const c of db.channels) if (c.botAdminBotId === b.id) c.botAdminBotId = "";
+    b.id = fresh;
+    seenIds.add(fresh);
+    renamed++;
+  }
+  if (renamed) auditSys("bots_normalized", "", `renamed=${renamed}`);
+  return renamed;
 }
 // Kanalda BARCHA yoqilgan botlar administrator ekanini tekshiradi.
 // Telegram'ni bosib ketmaslik uchun bir vaqtda 3 tadan ko'p so'rov yuborilmaydi.
@@ -4272,10 +4415,11 @@ async function handleMessage(msg) {
     u.state = null;
     return send(chat, T(u, "cancelled"), menuFor(u));
   }
-  if (LABEL2KEY[text]) u.state = null;
+  const menuKey = menuKeyOf(text);
+  if (menuKey) u.state = null;
   if (!await sponsorGate(u, chat)) return;
   const st = u.state;
-  if (st && !LABEL2KEY[text]) {
+  if (st && !menuKey) {
     if (st.type === "add_channel") return addChannel(u, text, chat);
     if (st.type === "add_ig") return addInstagram(u, text, chat);
     if (st.type === "order_qty") return prepareOrder(u, st.destId, parseInt(text.replace(/\D/g, ""), 10), chat);
@@ -4284,7 +4428,7 @@ async function handleMessage(msg) {
     if (st.type === "support") return submitComplaint(u, "Adminga murojaat (sozlamalar)", text, chat);
     if (st.type === "security") return submitComplaint(u, "Xavfsizlik (shubhali kirish)", text, chat);
   }
-  switch (LABEL2KEY[text] || text) {
+  switch (menuKey || text) {
     case "channels":
       return showChannels(u, chat);
     case "tasks":
@@ -4347,7 +4491,7 @@ async function handleCallback(cq) {
         title: esc(isTg ? d.title : "@" + d.username),
         unit,
         balance: balanceLine(u),
-        max: Math.floor(u.credits.available / Math.max(1, unit))
+        max: Math.floor(orderCredits(u) / Math.max(1, unit))
       }));
     }
     // Bir tugma bilan: barcha mavjud kreditga buyurtma (spec §6 ni tezlashtirish).
@@ -4356,7 +4500,7 @@ async function handleCallback(cq) {
       if (!d) return;
       const isTg = arg.startsWith("ch-");
       if (isTg && !channelsOf(u).some((c) => c.id === arg)) return;
-      const qty = Math.floor(u.credits.available / Math.max(1, perSub()));
+      const qty = Math.floor(orderCredits(u) / Math.max(1, perSub()));
       if (qty < 10) return send(chat, T(u, "ord_all_low", { max: qty }), menuFor(u));
       return prepareOrder(u, arg, Math.min(1e4, qty), chat);
     }
@@ -5021,10 +5165,26 @@ function migrateMemberships() {
 // Kanalda bot huquqi yo'qolgani ANIQLANDI — yangi vazifa berilmaydi, ochiq
 // vazifalar yopiladi, egasiga bir marta xabar boradi (spec §1.9).
 // Tarix (vazifalar, a'zoliklar, buyurtmalar) o'chirilmaydi.
-function markChannelPermissionLost(dest, reason, checkedAt) {
+function markChannelPermissionLost(dest, reason, checkedAt, opts = {}) {
   if (!dest || !dest.channelId) return false;
-  const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
   const at = checkedAt || new Date().toISOString();
+  const nowMs = Date.parse(at) || Date.now();
+  if (!opts.confirmed && ADMIN_LOCK_CONFIRM_MS > 0) {
+    const p = dest.adminLockPending;
+    const firstAt = p && p.reason === reason ? Date.parse(p.firstAt) || 0 : 0;
+    if (!firstAt) {
+      dest.adminLockPending = { reason, firstAt: at, checks: 1 };
+      auditSys("channel_admin_negative", dest.id, `reason=${reason} at=${at} stage=pending`);
+      return false;
+    }
+    if (nowMs - firstAt < ADMIN_LOCK_CONFIRM_MS) {
+      p.checks = (Number(p.checks) || 1) + 1;
+      auditSys("channel_admin_negative", dest.id, `reason=${reason} at=${at} stage=pending checks=${p.checks}`);
+      return false;
+    }
+  }
+  delete dest.adminLockPending;
+  const wasLost = dest.status === "permission_lost" && dest.botHasAdminRights === false;
   dest.botHasAdminRights = false;
   dest.botAdminStatus = reason === "no_rights" ? CHK.NO_RIGHTS
     : reason === "bot_not_found" ? CHK.NOT_FOUND
@@ -6498,7 +6658,7 @@ var server = http.createServer((req, res) => {
       openTasks: db.tasks.filter((t) => OPEN.has(t.status)).length,
       complaintsNew: db.complaints.filter((c) => c.status === "NEW").length,
       bots: botsList().map((b) => ({ id: b.id, role: b.role, username: b.username, online: botRuns.has(b.id) })),
-      settings: { ...S(), telegramBotToken: void 0, bots: void 0, news: void 0 }
+      settings: { ...S(), telegramBotToken: void 0, bots: void 0, news: void 0, textOverrides: void 0 }
     });
     return;
   }
@@ -6514,6 +6674,7 @@ var server = http.createServer((req, res) => {
       channel: "channels", orders: "orders", order: "orders", tasks: "tasks", bots: "bots",
       settings: "settings", complaints: "complaints", sponsors: "sponsors", instagram: "instagram",
       referrals: "referrals", moderation: "moderation", appeals: "moderation", analytics: "analytics",
+      texts: "settings",
       health: "health", audit: "audit", admins: "admins", export: "export", broadcast: "settings",
       backup: "health", backups: "health", ops: "health"
     };
@@ -7048,6 +7209,23 @@ var server = http.createServer((req, res) => {
               verifiedSubscribers: c.verifiedSubscribers,
               pendingSubscriptions: c.pendingSubscriptions,
               botHasAdminRights: !!c.botHasAdminRights,
+              botAdminStatus: c.botAdminStatus || "",
+              botAdminBotId: c.botAdminBotId || "",
+              lastAdminCheckAt: c.lastAdminCheckAt || "",
+              botsMissingAdmin: Array.isArray(c.botsMissingAdmin) ? c.botsMissingAdmin : [],
+              lockPending: !!c.adminLockPending,
+              // Har bir botning oxirgi natijasi (vaqti bilan) — «nega qulflandi?»
+              // savoliga javob panelda ko'rinadi.
+              botAdmins: Object.fromEntries(Object.entries(c.botAdmins || {}).map(([id, r]) => [id, {
+                label: (r && r.label) || id,
+                status: (r && r.status) || "",
+                ok: !!(r && r.ok),
+                limited: !!(r && r.limited),
+                transient: !!(r && r.transient),
+                reason: (r && r.reason) || "",
+                missing: (r && r.missing) || [],
+                checkedAt: (r && r.checkedAt) || ""
+              }])),
               status: c.status || "active",
               pausedAt: c.pausedAt || "",
               createdAt: c.createdAt
@@ -7065,6 +7243,24 @@ var server = http.createServer((req, res) => {
             save();
             audit(req, b.action === "pause" ? "channel_pause" : "channel_resume", c.title);
             return { id: c.id, status: c.status };
+          }
+          // Qo'lda qayta tekshirish: 6 soatlik navbatni kutmasdan bot adminligi
+          // qayta aniqlanadi (panel: «Qayta tekshirish»).
+          if (b.action === "recheck") {
+            if (c.disconnectedAt) throw new Error("Kanal uzilgan — qayta ulash kerak");
+            await channelHealthSweep({ force: true, channelId: c.id });
+            const f = db.channels.find((x) => x.id === c.id) || c;
+            save();
+            return {
+              id: f.id,
+              status: f.status || "active",
+              botHasAdminRights: !!f.botHasAdminRights,
+              botAdminStatus: f.botAdminStatus || "",
+              lastAdminCheckAt: f.lastAdminCheckAt || "",
+              lockPending: !!f.adminLockPending,
+              botsMissingAdmin: Array.isArray(f.botsMissingAdmin) ? f.botsMissingAdmin : [],
+              botAdmins: f.botAdmins || {}
+            };
           }
           // Avval faol buyurtmalarni bekor qilib, kreditini egasiga qaytaramiz —
           // aks holda o‘chirilgan kanal uchun kredit “band” bo‘lib qoladi.
@@ -7190,7 +7386,7 @@ var server = http.createServer((req, res) => {
           if (!isPost) {
             // Bot tokeni hech qachon brauzerga qaytarilmaydi (superadmin ham
             // ko'rmaydi — panel faqat niqoblangan tokenni ko'rsatadi).
-            const { news, bots, telegramBotToken, ...rest } = s;
+            const { news, bots, telegramBotToken, textOverrides, ...rest } = s;
             return { settings: { ...rest, news: news ? { enabled: news.enabled, channel: news.channel, times: news.times } : null } };
           }
           for (const k of ["creditRewardSignup", "creditRewardChannelLink", "creditRewardTelegram", "creditRewardInstagram", "creditRewardInstagramSelfConfirmed", "creditRewardReferral", "creditPerSubscriber"]) {
@@ -7219,6 +7415,58 @@ var server = http.createServer((req, res) => {
             audit(req, "instagram_toggle", String(s.isInstagramEnabled), "affected=" + owners.size);
           }
           return { saved: true };
+        }
+        case "texts": {
+          // Botning foydalanuvchiga ko'rinadigan matnlari. Standart matnlar
+          // `STR` da; bu yerdan faqat override saqlanadi.
+          const LANGS = ["uz", "ru", "en"];
+          if (!isPost) {
+            const lang = LANGS.includes(String(url.searchParams.get("lang") || "")) ? String(url.searchParams.get("lang")) : "uz";
+            const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+            const ov = (S().textOverrides || {})[lang] || {};
+            const keys = Object.keys(STR.uz).sort();
+            const items = [];
+            for (const key of keys) {
+              const def = STR[lang][key] != null ? STR[lang][key] : STR.uz[key];
+              const cur = typeof ov[key] === "string" && ov[key] !== "" ? ov[key] : def;
+              if (q && !key.toLowerCase().includes(q) && !String(cur).toLowerCase().includes(q)) continue;
+              items.push({
+                key,
+                value: String(cur == null ? "" : cur),
+                default: String(def == null ? "" : def),
+                overridden: typeof ov[key] === "string" && ov[key] !== "",
+                placeholders: [...new Set([...String(def || "").matchAll(/\{(\w+)\}/g)].map((m) => m[1]))]
+              });
+            }
+            return { lang, langs: LANGS, total: keys.length, overridden: Object.keys(ov).length, items };
+          }
+          const lang = LANGS.includes(String(b.lang || "")) ? String(b.lang) : "";
+          if (!lang) throw new Error("Til noto'g'ri");
+          const key = String(b.key || "");
+          if (STR.uz[key] == null) throw new Error("Matn kaliti topilmadi: " + key);
+          const value = String(b.value == null ? "" : b.value).replace(/\r\n/g, "\n");
+          if (!value.trim()) {
+            const ovAll = S().textOverrides || {};
+            if (ovAll[lang] && ovAll[lang][key] !== void 0) {
+              delete ovAll[lang][key];
+              if (!Object.keys(ovAll[lang]).length) delete ovAll[lang];
+              save();
+              audit(req, "text_reset", lang + ":" + key, "");
+            }
+            return { reset: true, key, lang, overridden: false };
+          }
+          if (value.length > 4000) throw new Error("Matn juda uzun — 4000 belgidan oshmasin");
+          const def = STR[lang][key] != null ? STR[lang][key] : STR.uz[key];
+          const required = [...new Set([...String(def || "").matchAll(/\{(\w+)\}/g)].map((m) => m[1]))];
+          const missing = required.filter((v) => !value.includes("{" + v + "}"));
+          if (missing.length) throw new Error("Bu o'zgaruvchilarni o'chirib bo'lmaydi: " + missing.map((v) => "{" + v + "}").join(", "));
+          const s = S();
+          if (!s.textOverrides) s.textOverrides = {};
+          if (!s.textOverrides[lang]) s.textOverrides[lang] = {};
+          s.textOverrides[lang][key] = value;
+          save();
+          audit(req, "text_save", lang + ":" + key, "len=" + value.length);
+          return { saved: true, key, lang, value, overridden: true };
         }
         case "broadcast": {
           if (!isPost) throw new Error("POST kerak");
@@ -7522,6 +7770,8 @@ async function main() {
   assertEnvSafe();
   await openStore();
   botsInit();
+  const renamedBots = normalizeBots();
+  if (renamedBots) console.log(`Bot id'lari tartibga solindi: ${renamedBots} ta`);
   migrateSettings();
   migrateMemberships();
   migrateOrderUnits();

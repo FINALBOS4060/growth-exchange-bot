@@ -101,6 +101,7 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
     <button data-tab="appeals">⚖️ Apellyatsiyalar</button>
     <button data-tab="sponsors">📣 Homiy kanallar</button>
     <button data-tab="bots">🤖 Botlar (tokenlar)</button>
+    <button data-tab="texts">✍️ Bot matnlari</button>
     <button data-tab="settings">⚙️ Sozlamalar</button>
     <div class="grp">Tizim</div>
     <button data-tab="ops">🧰 Operatsiyalar</button>
@@ -192,6 +193,20 @@ label{display:block;font-size:12px;color:#9aa4b8;margin:10px 0 5px}
         <button class="btn" id="sp-add">Qo'shish</button>
       </div>
     </div>
+  </section>
+
+  <section class="tab" id="tab-texts">
+    <h2>Bot matnlari</h2>
+    <div class="sub">Bot foydalanuvchiga yuboradigan xabarlar. Matnni tahrirlab <b>Saqlash</b>ni bosing — o'zgarish darhol kuchga kiradi. <span class="mono">{nom}</span> ko'rinishidagi o'zgaruvchilar majburiy: ularni o'chirsangiz matn saqlanmaydi. Matnni bo'sh qoldirib saqlasangiz — standart holat tiklanadi.</div>
+    <div class="box">
+      <div class="row">
+        <div><label>Til</label><select id="texts-lang"><option value="uz">O'zbekcha</option><option value="ru">Русский</option><option value="en">English</option></select></div>
+        <div><label>Qidiruv (kalit yoki matn)</label><input id="texts-q" placeholder="masalan: ord_qty yoki kredit"></div>
+        <button class="btn ghost" id="texts-reload">Yangilash</button>
+      </div>
+      <div class="muted" id="texts-meta" style="margin-top:10px;font-size:12px"></div>
+    </div>
+    <div id="texts-list"><div class="empty">Yuklanmoqda…</div></div>
   </section>
 
   <section class="tab" id="tab-settings">
@@ -369,6 +384,7 @@ function load(tab) {
      instagram: loadInstagram, referrals: loadReferrals, moderation: loadModeration, appeals: loadAppeals,
      analytics: loadAnalytics, health: loadHealth, audit: loadAudit, admins: loadAdmins,
      ops: loadOps,
+     texts: loadTexts,
      settings: loadSettings }[tab] || (() => {}))().catch(e => toast(e.message, true));
 }
 
@@ -452,6 +468,56 @@ $('#bot-add').onclick = async () => {
   $('#bot-add').disabled = false;
 };
 
+/* ---------- bot matnlari ---------- */
+let textsCache = [];
+function textBox(it, i) {
+  const rows = Math.min(14, Math.max(3, String(it.value || '').split('\n').length + 1));
+  return '<div class="box">' +
+    '<h3>' + esc(it.key) + ' ' + (it.overridden ? '<span class="pill warn">o‘zgartirilgan</span>' : '<span class="pill">standart</span>') + '</h3>' +
+    (it.placeholders && it.placeholders.length ? '<div class="muted" style="font-size:11.5px;margin-bottom:6px">O‘zgaruvchilar: <span class="mono">' + it.placeholders.map(p => '{' + esc(p) + '}').join(' ') + '</span></div>' : '') +
+    '<textarea data-text="' + i + '" rows="' + rows + '">' + esc(it.value) + '</textarea>' +
+    '<div class="row" style="margin-top:8px;align-items:center">' +
+    '<button class="btn sm" data-text-save="' + i + '">Saqlash</button>' +
+    '<button class="btn ghost sm" data-text-reset="' + i + '">Standartga qaytarish</button>' +
+    (it.overridden ? '<span class="muted" style="flex:0 0 auto;min-width:0;font-size:11.5px">standart: <span class="mono">' + esc(it.default.length > 140 ? it.default.slice(0, 140) + '…' : it.default) + '</span></span>' : '') +
+    '</div></div>';
+}
+async function loadTexts() {
+  const lang = $('#texts-lang').value;
+  const q = $('#texts-q').value.trim();
+  const d = await api('/api/admin/texts?lang=' + encodeURIComponent(lang) + '&q=' + encodeURIComponent(q));
+  textsCache = d.items || [];
+  $('#texts-meta').textContent = textsCache.length + ' ta matn ko‘rsatildi (jami ' + d.total + ') · o‘zgartirilgan: ' + d.overridden;
+  $('#texts-list').innerHTML = textsCache.length ? textsCache.map(textBox).join('') : '<div class="empty">Matn topilmadi</div>';
+  document.querySelectorAll('[data-text-save]').forEach(el => el.onclick = async () => {
+    const i = Number(el.dataset.textSave);
+    const ta = document.querySelector('[data-text="' + i + '"]');
+    el.disabled = true;
+    try {
+      await api('/api/admin/texts', { lang: $('#texts-lang').value, key: textsCache[i].key, value: ta.value });
+      toast('Saqlandi: ' + textsCache[i].key);
+      await loadTexts();
+    } catch (e) { toast(e.message, true); el.disabled = false; }
+  });
+  document.querySelectorAll('[data-text-reset]').forEach(el => el.onclick = async () => {
+    const i = Number(el.dataset.textReset);
+    if (!confirm('Standart matnga qaytarilsinmi?')) return;
+    el.disabled = true;
+    try {
+      await api('/api/admin/texts', { lang: $('#texts-lang').value, key: textsCache[i].key, value: '' });
+      toast('Standartga qaytarildi: ' + textsCache[i].key);
+      await loadTexts();
+    } catch (e) { toast(e.message, true); el.disabled = false; }
+  });
+}
+let textsSearchTimer;
+$('#texts-lang').onchange = () => loadTexts().catch(e => toast(e.message, true));
+$('#texts-q').oninput = () => {
+  clearTimeout(textsSearchTimer);
+  textsSearchTimer = setTimeout(() => loadTexts().catch(e => toast(e.message, true)), 300);
+};
+$('#texts-reload').onclick = () => loadTexts().catch(e => toast(e.message, true));
+
 /* ---------- foydalanuvchilar ---------- */
 let usersCache = [];
 async function loadUsers() {
@@ -486,15 +552,29 @@ $('#users-search').onclick = () => loadUsers().catch(e => toast(e.message, true)
 $('#users-q').addEventListener('keydown', e => { if (e.key === 'Enter') loadUsers().catch(err => toast(err.message, true)); });
 
 /* ---------- kanallar ---------- */
+function chAdminCell(c) {
+  const rows = Object.entries(c.botAdmins || {}).map(([id, r]) => {
+    const p = ADMIN_PILL[r.status] || ['', r.status || '—'];
+    return '<span class="pill ' + p[0] + '" title="' + esc(id) + '">' + esc(r.label || id) + '</span> ' +
+      '<span class="muted" style="font-size:11px">' + esc(p[1]) + '</span>';
+  });
+  const at = c.lastAdminCheckAt ? new Date(c.lastAdminCheckAt).toLocaleString() : '—';
+  return (rows.length ? rows.join('<br>') : '<span class="muted">tekshirilmagan</span>') +
+    '<div class="muted" style="font-size:11px">tekshirildi: ' + esc(at) + '</div>' +
+    (c.lockPending ? '<span class="pill warn" title="Ikkinchi (tasdiqlovchi) tekshiruv kutilmoqda">tasdiq kutilmoqda</span>' : '') +
+    ((c.botsMissingAdmin || []).length ? '<div class="muted" style="font-size:11px">admin emas: ' + esc(c.botsMissingAdmin.join(', ')) + '</div>' : '');
+}
 async function loadChannels() {
   const d = await api('/api/admin/channels');
   $('#ch-sub').textContent = 'Jami: ' + d.items.length + ' ta ulangan kanal';
-  $('#ch-list').innerHTML = table(['Kanal', 'Egasi', 'Obunachilar', 'Kutilmoqda', 'Holat', ''], d.items.map(c =>
+  $('#ch-list').innerHTML = table(['Kanal', 'Egasi', 'Obunachilar', 'Kutilmoqda', 'Admin tekshiruvi', 'Holat', ''], d.items.map(c =>
     '<tr><td><b>' + esc(c.title) + '</b><div class="mono muted">@' + esc(c.username) + '</div></td>' +
     '<td>' + esc(c.ownerName) + '</td><td>' + money(c.verifiedSubscribers) + '</td><td>' + money(c.pendingSubscriptions) + '</td>' +
+    '<td>' + chAdminCell(c) + '</td>' +
     '<td>' + (c.botHasAdminRights ? '<span class="pill ok">admin</span>' : '<span class="pill err">admin emas</span>') +
     (c.status === 'paused' ? ' <span class="pill warn">pauza</span>' : c.status === 'disconnected' ? ' <span class="pill err">uzilgan</span>' : '') + '</td>' +
-    '<td><button class="btn ghost sm" data-ch-grant="' + esc(c.id) + '" title="Kredit talab qilmasdan obunachi vazifasi qo\'shadi">Vazifa qo\'shish</button> ' +
+    '<td><button class="btn ghost sm" data-ch-check="' + esc(c.id) + '" title="Bot adminligini hoziroq qayta tekshirish">Qayta tekshirish</button> ' +
+    '<button class="btn ghost sm" data-ch-grant="' + esc(c.id) + '" title="Kredit talab qilmasdan obunachi vazifasi qo\'shadi">Vazifa qo\'shish</button> ' +
     '<button class="btn ghost sm" data-ch-pause="' + esc(c.id) + '" data-paused="' + (c.status === 'paused' ? '1' : '0') + '">' + (c.status === 'paused' ? 'Davom ettirish' : 'Pauza') + '</button> ' +
     '<button class="btn danger sm" data-ch-del="' + esc(c.id) + '">O\'chirish</button></td></tr>').join(''));
   document.querySelectorAll('[data-ch-pause]').forEach(el => el.onclick = async () => {
@@ -503,6 +583,16 @@ async function loadChannels() {
     el.disabled = true;
     try { await api('/api/admin/channel', { id: el.dataset.chPause, action: paused ? 'resume' : 'pause' }); toast(paused ? 'Kanal davom ettirildi' : 'Kanal pauza qilindi'); loadChannels(); }
     catch (e) { toast(e.message, true); }
+    el.disabled = false;
+  });
+  document.querySelectorAll('[data-ch-check]').forEach(el => el.onclick = async () => {
+    el.disabled = true;
+    try {
+      const r = await api('/api/admin/channel', { id: el.dataset.chCheck, action: 'recheck' });
+      const bots = Object.values(r.botAdmins || {}).map(x => (x.label || '') + ': ' + (x.ok ? 'admin' : (x.status || 'xato'))).join(' · ');
+      toast((r.botHasAdminRights ? 'Bot admin tasdiqlandi. ' : 'Bot admin emas. ') + (r.lockPending ? 'Tasdiqlash kutilmoqda. ' : '') + bots);
+      loadChannels();
+    } catch (e) { toast(e.message, true); }
     el.disabled = false;
   });
   document.querySelectorAll('[data-ch-grant]').forEach(el => el.onclick = async () => {

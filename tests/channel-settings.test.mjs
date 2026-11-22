@@ -168,7 +168,10 @@ function startServer() {
       ADMIN_PASSWORD: "testpass",
       DATA_FILE: DB,
       KEEP_ALIVE: "0",
-      VERIFY_BATCH: "25"
+      VERIFY_BATCH: "25",
+      // Bu testda «bitta salbiy natija → qulf» xatti-harakati tekshiriladi;
+      // ikki marta tasdiqlash alohida testda (admin-lock-confirm).
+      ADMIN_LOCK_CONFIRM_SEC: "0"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
