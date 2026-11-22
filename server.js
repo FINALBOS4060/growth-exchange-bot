@@ -5803,6 +5803,9 @@ function botView(b) {
     enabled: !!b.enabled,
     online: botRuns.has(b.id),
     tokenMasked: maskToken(b.token),
+    // Env tokenidagi bot himoyalangan: uni panel orqali o'chirib bo'lmaydi.
+    // Qo'lda qo'shilgan (endi yaroqsiz bo'lib qolgan) yozuvni esa o'chirish mumkin.
+    envProtected: !!String(TOKEN || "").trim() && String(b.token || "") === String(TOKEN).trim(),
     lastError: b.lastError || "",
     createdAt: b.createdAt || "",
     ...botAdminSummary(b.id)
@@ -7128,7 +7131,7 @@ var server = http.createServer((req, res) => {
           if (action === "toggle") {
             const bot = botById(String(b.id || ""));
             if (!bot) throw new Error("Bot topilmadi");
-            if (bot.role === "main" && !b.enabled) throw new Error("Asosiy botni o'chirib bo'lmaydi (u env orqali boshqariladi)");
+            if (!b.enabled && String(bot.token || "") === String(TOKEN || "").trim()) throw new Error("Env tokenidagi asosiy botni o'chirib bo'lmaydi");
             bot.enabled = !!b.enabled;
             save();
             if (bot.enabled) await startBotLoop(bot);
@@ -7138,7 +7141,7 @@ var server = http.createServer((req, res) => {
           if (action === "delete") {
             const bot = botById(String(b.id || ""));
             if (!bot) throw new Error("Bot topilmadi");
-            if (bot.role === "main") throw new Error("Asosiy botni o'chirib bo'lmaydi");
+            if (String(bot.token || "") === String(TOKEN || "").trim()) throw new Error("Env tokenidagi asosiy botni o'chirib bo'lmaydi");
             stopBotLoop(bot.id);
             S().bots = botsList().filter((x) => x.id !== bot.id);
             // O'chirilgan botning eski tekshiruv natijalari kanallarda qolib

@@ -440,7 +440,7 @@ async function loadBots() {
     '<td>' + adminCell(b) + '</td>' +
     '<td>' + (b.online ? '<span class="pill ok">onlayn</span>' : (b.enabled ? '<span class="pill warn">kutilmoqda</span>' : '<span class="pill err">o\'chiq</span>')) + '</td>' +
     '<td class="muted">' + esc(b.lastError || '—') + '</td>' +
-    '<td>' + (b.role === 'main' ? '<span class="muted">env orqali</span>' :
+    '<td>' + (b.envProtected ? '<span class="muted">env orqali</span>' :
       '<button class="btn ghost sm" data-bot-toggle="' + esc(b.id) + '" data-on="' + (b.enabled ? '0' : '1') + '">' + (b.enabled ? 'To\'xtatish' : 'Yoqish') + '</button> ' +
       '<button class="btn danger sm" data-bot-del="' + esc(b.id) + '">O\'chirish</button>') + '</td></tr>').join(''));
   document.querySelectorAll('[data-bot-toggle]').forEach(el => el.onclick = async () => {
